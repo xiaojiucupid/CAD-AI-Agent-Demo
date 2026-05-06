@@ -1,0 +1,17 @@
+{
+  "t_convert": 0.8294337000006635,
+  "t_parse": 0.7745926000025065,
+  "t_review": 0.002520300000469433,
+  "t_render": 0.43953679999685846,
+  "t_total": 2.046083400000498,
+  "conversion_steps": [
+    "接收文件：test_site_03.dwg",
+    "识别为 DWG 文件：准备自动转换为 DXF。",
+    "转换工具：C:\\Program Files\\ODA\\ODAFileConverter\\ODAFileConverter.exe",
+    "转换输出目录：C:\\Users\\cupid\\Desktop\\二轮题测\\outputs\\web\\4fa2055c005d\\converted_dxf",
+    "执行 DWG→DXF 转换，用时 0.8294s。",
+    "转换成功：test_site_03.dxf",
+    "进入 ParseAgent 图纸解析。",
+    "使用 DWG 专用解析器：按真实图纸图层/块参照/线图元进行抽取，不影响原 DXF 解析逻辑。"
+  ]
+}

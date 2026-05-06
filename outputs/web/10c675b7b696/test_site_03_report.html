@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang='zh-CN'>
+<head><meta charset='utf-8'><title>test_site_03 建筑退让审查报告</title>
+<style>
+body{font-family:Arial,'Microsoft YaHei',sans-serif;margin:32px;color:#1a202c;line-height:1.6}h1{color:#1a365d}table{border-collapse:collapse;width:100%;font-size:14px}td,th{border:1px solid #cbd5e0;padding:8px}th{background:#edf2f7}.fail{background:#fff5f5;color:#9b2c2c}.card{background:#f7fafc;border-left:4px solid #3182ce;padding:12px 16px;margin:16px 0}.warn{background:#fffbeb;border-left:4px solid #f59e0b;padding:12px 16px;margin:16px 0;color:#92400e}img{max-width:100%;border:1px solid #e2e8f0}</style></head>
+<body>
+<h1>建筑退让道路红线自动审查报告</h1>
+<div class='card'><b>项目概览</b><br>原始图纸：test_site_03.dwg<br>审查图纸：test_site_03.dxf<br>道路数量：8；建筑数量：28<br>审查依据：《杭州市城市规划管理技术规定（2026）》第三部分（四）第2款表3-2、第3款道路交叉口退让要求（Demo结构化实现）</div>
+<h2>CAD 输入与转换过程</h2><ol><li>接收文件：test_site_03.dwg</li><li>识别为 DWG 文件：准备自动转换为 DXF。</li><li>转换工具：C:\Program Files\ODA\ODAFileConverter\ODAFileConverter.exe</li><li>转换输出目录：C:\Users\cupid\Desktop\二轮题测\outputs\web\10c675b7b696\converted_dxf</li><li>执行 DWG→DXF 转换，用时 0.7043s。</li><li>转换成功：test_site_03.dxf</li><li>进入 ParseAgent 图纸解析。</li><li>使用 DWG 专用解析器：按真实图纸图层/块参照/线图元进行抽取，不影响原 DXF 解析逻辑。</li></ol>
+<h2>解析置信度与复核提示</h2><div class='warn'><b>解析模式：</b>dwg-profile；<b>置信度：</b>low</div><ul><li>DWG 专用解析模式：优先使用 HATCH/填充面识别建筑候选，文字乱码时仍可基于图形审查。</li><li>道路候选与建筑组团最近距离约 2988.0，明显大于道路宽度，道路红线识别置信度低，审查结论需人工复核。</li><li>检测到红线/边界类图层，但尚未能稳定构造道路红线面域，已保守标记为低置信度。</li></ul>
+<h2>逐栋审查明细表</h2><table><thead><tr><th>建筑名称</th><th>类型</th><th>高度(m)</th><th>临接道路</th><th>实际让距(m)</th><th>理论让距(m)</th><th>判定</th><th>依据链</th></tr></thead><tbody><tr class=''><td>B1</td><td>多层</td><td>14.68</td><td>道路3</td><td>55596.26</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B2</td><td>多层</td><td>14.68</td><td>道路3</td><td>59520.03</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B3</td><td>多层</td><td>14.68</td><td>道路3</td><td>55596.26</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B4</td><td>多层</td><td>15.78</td><td>道路3</td><td>61355.87</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B5</td><td>多层</td><td>15.78</td><td>道路3</td><td>80508.95</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B6</td><td>多层</td><td>23.08</td><td>道路8</td><td>71845.41</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B7</td><td>多层</td><td>24.18</td><td>道路8</td><td>69859.72</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B8</td><td>多层</td><td>23.08</td><td>道路8</td><td>74623.44</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B9</td><td>多层</td><td>24.18</td><td>道路8</td><td>56758.34</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B10</td><td>多层</td><td>24.18</td><td>道路8</td><td>85640.55</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B11</td><td>多层</td><td>23.08</td><td>道路8</td><td>53101.25</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B12</td><td>多层</td><td>24.18</td><td>道路8</td><td>53597.13</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B13</td><td>多层</td><td>23.08</td><td>道路8</td><td>5345.54</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B14</td><td>多层</td><td>18.88</td><td>道路8</td><td>5120.70</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B15</td><td>多层</td><td>18.88</td><td>道路8</td><td>8079.44</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B16</td><td>多层</td><td>24.18</td><td>道路8</td><td>10783.67</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B17</td><td>多层</td><td>24.18</td><td>道路8</td><td>5345.54</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B18</td><td>多层</td><td>19.98</td><td>道路8</td><td>19747.55</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B19</td><td>多层</td><td>24.18</td><td>道路8</td><td>26767.98</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B20</td><td>多层</td><td>19.98</td><td>道路8</td><td>27682.57</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，多层建筑，退让=8.0m；非交叉口情形</td></tr>
+<tr class=''><td>B21</td><td>低层</td><td>0.00</td><td>道路4</td><td>43892.46</td><td>5.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，低层建筑，退让=5.0m；非交叉口情形</td></tr>
+<tr class=''><td>B22</td><td>高层</td><td>0.00</td><td>道路4</td><td>2987.99</td><td>5.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，低层建筑，退让=5.0m；非交叉口情形</td></tr>
+<tr class=''><td>B23</td><td>低层</td><td>0.00</td><td>道路4</td><td>33617.86</td><td>5.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，低层建筑，退让=5.0m；非交叉口情形</td></tr>
+<tr class=''><td>B24</td><td>低层</td><td>0.00</td><td>道路4</td><td>5196.65</td><td>5.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，低层建筑，退让=5.0m；非交叉口情形</td></tr>
+<tr class=''><td>B25</td><td>多层</td><td>35.00</td><td>道路4</td><td>7144.12</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B26</td><td>多层</td><td>35.00</td><td>道路4</td><td>14648.83</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B27</td><td>多层</td><td>35.00</td><td>道路4</td><td>15224.00</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr>
+<tr class=''><td>B28</td><td>多层</td><td>35.00</td><td>道路4</td><td>5977.58</td><td>8.00</td><td>合规</td><td>表3-2：20m&lt;道路红线宽度≤40m，高层建筑，退让=8Q=8×1=8m；非交叉口情形</td></tr></tbody></table>
+<h2>总平面标注图</h2><p>建筑内部仅保留短标签；绿色为合规建筑，红色为不合规建筑；道路红线为红色边界，中心线为绿色虚线，右侧为问题清单图例。</p><img src='test_site_03_annotation.png' alt='annotation'>
+<h2>审查结论摘要</h2><p>合规建筑：28 栋；不合规建筑：0 栋。</p><ul><li>未发现不合规问题</li></ul>
+<h2>速度测试</h2><pre>t_convert=0.7043s
+t_parse=0.8566s
+t_review=0.0044s
+t_render=0.4698s
+t_total=2.0351s</pre>
+</body></html>

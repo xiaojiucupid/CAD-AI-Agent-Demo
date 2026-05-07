@@ -43,24 +43,40 @@ class LLMConfig:
 
     @property
     def api_key(self) -> str | None:
+        """从环境变量读取 API Key。当前 Demo 默认不会调用。"""
+
         return os.getenv(self.api_key_env)
 
     @property
     def base_url(self) -> str | None:
+        """从环境变量读取 OpenAI-compatible base URL。当前 Demo 默认不会调用。"""
+
         return os.getenv(self.base_url_env)
 
 
 @dataclass
 class AgentContext:
+    """一次审查任务的完整上下文，随 LangGraph 状态在各 Agent 间流转。"""
+
+    # input_path: 用户上传或 CLI 传入的原始 CAD 路径，可以是 DXF 或 DWG。
     input_path: Path
+    # output_dir: 本次任务的输出目录，报告、图片和 timing JSON 都写到这里。
     output_dir: Path
+    # review_path: 实际用于审查的 DXF 路径；DWG 转换后指向转换产物，DXF 输入则指向自身。
     review_path: Path | None = None
+    # conversion: ConvertAgent 的转换结果，记录是否转换、耗时和转换步骤。
     conversion: ConversionResult | None = None
+    # drawing: ParseAgent 输出的结构化图纸对象。
     drawing: DrawingData | None = None
+    # results: ReviewAgent 输出的逐栋审查结果。
     results: list[ReviewResult] | None = None
+    # timing: 全链路耗时统计。
     timing: Timing = field(default_factory=Timing)
+    # artifacts: ReportAgent 输出的文件路径字典，例如 report/image/timing。
     artifacts: dict[str, Path] | None = None
+    # llm_config: 预留大模型配置，当前几何审查不依赖 LLM。
     llm_config: LLMConfig = field(default_factory=LLMConfig)
+    # dwg_mode: DWG 专用解析模式，strict/balanced/raw。
     dwg_mode: str = "balanced"
 
 
@@ -196,6 +212,8 @@ class LangGraphReviewWorkflow:
         self.graph = self._build_graph()
 
     def _build_graph(self) -> Any:
+        """构建 LangGraph 有向流程图。"""
+
         builder = StateGraph(WorkflowState)
         builder.add_node("convert", self._convert_node)
         builder.add_node("parse", self._parse_node)
@@ -221,6 +239,8 @@ class LangGraphReviewWorkflow:
         return {"ctx": self.report_agent.run(state["ctx"])}
 
     def run(self, input_path: str | Path, output_dir: str | Path, dwg_mode: str = "balanced") -> AgentContext:
+        """执行一次完整审查任务。"""
+
         ctx = AgentContext(
             input_path=Path(input_path),
             output_dir=Path(output_dir),

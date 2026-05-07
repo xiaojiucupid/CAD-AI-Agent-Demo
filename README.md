@@ -1,276 +1,715 @@
-# 建筑退让道路红线自动审查 Demo
+# 建筑退让道路红线自动审查 Agent Demo
 
-本项目用于完成“二轮测试题目”中的 `建筑退让道路红线审查` 模块 Demo。
-输入为 CAD 总平面图（当前直接支持 `DXF`），输出为 `HTML 审查报告 + 标注图片 + 速度日志`。
+本项目对应二轮测试题目中的 **“建筑退让道路红线审查”模块**。输入为 CAD 总平面图（`DXF/DWG`），输出为图文结合的自动审查报告，并记录全链路速度日志。
 
-## 1. 功能范围
+项目采用 `LangGraph` 构建多 Agent 工作流，不是单一脚本顺序执行。核心流程可离线运行，不依赖大模型 API；后续如需接入 LLM 做规范问答、报告润色或人工复核，`app/agent.py` 中已预留 `LLMConfig`。
 
-当前 Demo 已实现以下两类规则：
+---
 
-- 《杭州市城市规划管理技术规定（2026）》第三部分 建筑管理 /（四）建筑退让 / 第 2 款：沿城市道路两侧新建建筑后退道路规划红线最小距离（表 3-2 的 Demo 化结构实现）
-- 第 3 款：道路交叉口四周建筑后退道路红线要求（Demo 中实现为交叉口附加退让）
+## 1. 题目要求实现情况对照
 
-说明：
+| 题目要求 | 当前实现情况 | 对应代码/输出 |
+|---|---|---|
+| 输入 CAD 总平面图，支持 `DXF/DWG` | 已实现。DXF 直接解析；DWG 自动调用 ODA File Converter 转 DXF 后解析 | `app/parser.py`、`app/converter.py`、`app/dwg_parser.py` |
+| 实现表 3-2：沿城市道路两侧建筑后退道路红线最小距离 | 已实现结构化规则表 | `app/rules.py` |
+| 实现第 3 款：道路交叉口四周建筑退让要求 | 已实现交叉口上下文判断，并与表 3-2 控制值取严 | `app/reviewer.py`、`app/rules.py` |
+| 使用 Agent 框架 | 已实现，使用 `LangGraph StateGraph` | `app/agent.py` |
+| 不可写成单一脚本 | 已拆分为 `ConvertAgent`、`ParseAgent`、`ReviewAgent`、`ReportAgent` | `app/agent.py` |
+| 输出图文结合报告 | 已实现 HTML 报告 + 总平面标注图 | `app/renderer.py`、`outputs/*_report.html` |
+| 报告包含项目概览 | 已实现，道路数量、建筑数量、审查依据 | HTML 报告 |
+| 报告包含逐栋审查明细表 | 已实现，包含建筑名称、类型、高度、临接道路、实际让距、理论让距、判定结果、依据链 | HTML 报告 |
+| 报告包含总平面标注图 | 已实现，合规绿色，不合规红色，右侧问题清单 | `*_annotation.png` |
+| 报告包含审查结论摘要 | 已实现，合规/不合规建筑数量、问题清单 | HTML 报告 |
+| 记录速度日志 | 已实现 `t_parse`、`t_review`、`t_render`、`t_total`；同时额外记录 `t_convert` | `*_timing.json`、`speed_summary.json` |
+| 核心算法有测试 | 已实现单元测试 | `tests/test_rules.py`、`tests/test_geometry_and_reviewer.py` |
+| README 包含环境安装与启动命令 | 已实现 | 本文件第 7 节、第 17 节 |
+| 关键函数有注释 | 已实现，核心 Agent、解析器、规则、审查、渲染函数均有注释 | `app/*.py` |
+| 针对三份图纸输出报告 | 支持。`test_site_01.dxf`、`test_site_02.dxf` 直接审查；`test_site_03.dwg` 自动转换后审查 | `python main.py` 或 Web 上传 |
 
-- 当前仓库中的规范逻辑采用“可运行 Demo 的结构化规则链”实现，便于在面试中演示 Agent 化拆解、几何计算和报告生成全流程。
-- 由于题目说明中未直接给出完整表 3-2 数值矩阵，本项目将 `Q 值` 和 `最小退让` 设计为可替换函数，后续只需替换 `app/rules.py` 即可接入正式条文数值。
+说明：题目要求速度字段为 `t_parse / t_review / t_render / t_total`。本项目在此基础上额外增加 `t_convert`，用于记录 DWG 自动转换耗时；`t_total = t_convert + t_parse + t_review + t_render`。
 
-## 2. Agent 架构设计
+---
 
-项目没有把流程写成单一脚本，而是采用 `LangGraph StateGraph` 实现 Agent 编排，入口位于 `app/agent.py`。
+## 2. 运行结论与注意事项
 
-当前图工作流为：
+### 2.1 简化 DXF 图纸
+
+`test_site_01.dxf` 与 `test_site_02.dxf` 为简化测试图纸，图层和标注较规范，当前系统可稳定解析并生成审查报告。
+
+### 2.2 真实 DWG 图纸
+
+`test_site_03.dwg` 为真实图纸，图层、块参照、填充、文字、道路线和红线较复杂。系统支持：
+
+- 自动 DWG 转 DXF。
+- DWG 专用解析器。
+- 三种 DWG 解析模式。
+- 解析置信度提示。
+- 低置信度人工复核提示。
+
+真实 DWG 的道路红线识别难度明显高于简化 DXF。如果报告中出现 `confidence=low` 或“道路红线识别置信度低”，应将结果作为自动初审结果，需要人工复核道路红线图层或进入后续图层配置流程。
+
+---
+
+## 3. 技术选型理由
+
+| 技术 | 用途 | 选择理由 |
+|---|---|---|
+| `LangGraph` | Agent 编排 | 明确满足题目“必须使用 Agent 框架”的要求；节点和边清晰，便于解释和扩展 |
+| `ezdxf` | DXF 解析 | 开源、稳定、适合读取 DXF 图层、文字、多段线、块参照等 |
+| `shapely` | 几何计算 | 适合计算建筑轮廓、道路面域、边界距离、相交关系 |
+| `matplotlib` | 标注图渲染 | 可在服务端无界面生成 PNG；已使用 `Agg` 后端避免 Web 线程 GUI 问题 |
+| `Flask` | Web 上传界面 | 轻量、易演示，适合 2 天 Demo 快速交付 |
+| `pytest` | 单元测试 | 覆盖核心规则和几何审查链路 |
+| ODA File Converter | DWG 转 DXF | DWG 为专有二进制格式，先转 DXF 是更稳定的工程方案 |
+
+---
+
+## 4. Agent 架构设计
+
+项目入口：
 
 ```text
-parse_agent -> review_agent -> report_agent -> END
+app/agent.py
 ```
 
-1. `parse_agent`
-   - 负责解析 DXF 图纸
-   - 提取道路红线、道路名称/宽度、建筑轮廓、建筑高度
-   - 记录 `t_parse`
-
-2. `review_agent`
-   - 负责逐栋建筑与道路建立邻接关系
-   - 调用规则引擎进行 `Q 值查询`、`最小让距查表`、`交叉口附加判定`
-   - 输出逐栋审查明细
-   - 记录 `t_review`
-
-3. `report_agent`
-   - 负责绘制总平面标注图
-   - 负责渲染 HTML 报告和 timing JSON
-   - 记录 `t_render`
-
-这种拆分方式的优点：
-
-- 明确满足题目中的 Agent 框架要求，且可在代码中直接看到 LangGraph 节点与边
-- 职责边界清晰，便于解释
-- 规则层与图形解析层解耦，方便后续扩展表 3-3 / 表 3-4
-- 每个阶段都有独立耗时统计，便于速度优化
-- 后续可以继续加入 `llm_explain_agent`、`human_review_agent` 等节点
-
-### 2.1 API 与密钥预留
-
-当前几何审查、规则判定和报告生成均可离线运行，不强制依赖大模型 API。为了后续扩展 Agent 的文本解释、规则问答或报告润色，`app/agent.py` 已预留 `LLMConfig`：
-
-```bash
-$env:OPENAI_BASE_URL="https://your-api-base/v1"
-$env:OPENAI_API_KEY="your-api-key"
-```
-
-可在 `LLMConfig` 中配置：
-
-- `provider`
-- `model`
-- `api_key_env`
-- `base_url_env`
-
-后续如果接入 OpenAI 兼容 API、LangChain ChatModel 或自定义推理服务，可以直接在新增 LangGraph Agent 节点中读取这些配置。
-
-## 3. 目录结构
+当前工作流：
 
 ```text
-二轮题测/
-├─ app/
-│  ├─ agent.py       # Agent 编排与上下文
-│  ├─ cli.py         # 命令行入口
-│  ├─ geometry.py    # 几何计算
-│  ├─ models.py      # 数据模型
-│  ├─ parser.py      # DXF 解析
-│  ├─ renderer.py    # HTML 报告与标注图渲染
-│  ├─ reviewer.py    # 审查流程
-│  └─ rules.py       # 规则引擎（Q 值、查表、交叉口）
-├─ tests/
-│  └─ test_rules.py  # 核心规则断言
-├─ outputs/          # 生成的报告与速度日志
-├─ main.py           # 启动入口
-└─ requirements.txt
+convert -> parse -> review -> report -> END
 ```
 
-## 4. 环境安装
+### 4.1 `ConvertAgent`
 
-建议 Python 版本：`3.11+`
+职责：
 
-### Windows PowerShell
+- 接收输入 CAD 文件。
+- 判断文件类型。
+- `DXF`：直接进入解析。
+- `DWG`：调用 ODA File Converter 自动转换为 `DXF`。
+- 记录转换过程文字。
+- 记录 `t_convert`。
+
+对应代码：
+
+```text
+app/converter.py
+app/agent.py
+```
+
+### 4.2 `ParseAgent`
+
+职责：
+
+- 解析道路红线、道路中心线、道路宽度。
+- 解析建筑轮廓、建筑高度、建筑类型。
+- 标准 DXF 走 `app/parser.py`。
+- DWG 转换后的 DXF 走 `app/dwg_parser.py`。
+- 输出 `DrawingData`。
+- 记录 `t_parse`。
+
+### 4.3 `ReviewAgent`
+
+职责：
+
+- 建立建筑与临接道路关系。
+- 计算实际退让距离。
+- 查询表 3-2 理论退让距离。
+- 判断交叉口上下文。
+- 输出逐栋审查结果。
+- 记录 `t_review`。
+
+### 4.4 `ReportAgent`
+
+职责：
+
+- 生成 HTML 审查报告。
+- 生成总平面标注图。
+- 输出 timing JSON。
+- 记录 `t_render`。
+
+---
+
+## 5. 规范依据与规则实现
+
+### 5.1 实现条款
+
+根据题目要求，本项目实现：
+
+1. 《杭州市城市规划管理技术规定（2026）》第三部分 建筑管理 /（四）建筑退让 / 第 2 款：沿城市道路两侧新建建筑后退道路规划红线的最小距离（表 3-2）。
+2. 第 3 款：道路交叉口四周建筑物后退道路红线距离要求。
+
+说明：表 3-3（高架/轨道退让）和表 3-4（高压线退让）属于题目加分项，不纳入当前核心审查链，避免偏离本题“建筑退让道路红线”的主任务。
+
+### 5.2 表 3-2 结构化实现
+
+规则代码：
+
+```text
+app/rules.py
+```
+
+当前表 3-2 结构化为：
+
+| 道路红线宽度 | 低层骑楼 | 低层建筑 | 多层建筑 | 高层建筑 |
+|---|---:|---:|---:|---:|
+| 14m≤W≤20m | 2m | 3m | 5m | 5Q |
+| 20m<W≤40m | 3m | 5m | 8m | 8Q |
+| W>40m | 5m | 8m | 10m | 10Q |
+
+建筑类别识别：
+
+- 名称或类型包含“骑楼”：低层骑楼。
+- 高度 ≤ 10m：低层建筑。
+- 10m < 高度 ≤ 24m：多层建筑。
+- 高度 > 24m：高层建筑。
+
+说明：规范附件 2 中住宅高层阈值为 `>27m`，非单层公共建筑高层阈值为 `>24m`。当前 CAD 输入未稳定提供住宅/公共建筑功能字段，因此审查时采用更严格的 `24m` 作为高层判定阈值。
+
+### 5.3 Q 值查询
+
+Q 值逻辑位于：
+
+```text
+app/rules.py
+```
+
+当前代码已按规范附件 2 实现 Q 值分段：
+
+| 建筑高度 H | Q |
+|---|---:|
+| 24m < H ≤ 50m | 1.0 |
+| 50m < H ≤ 75m | 1.2 |
+| 75m < H ≤ 100m | 1.4 |
+| 100m < H ≤ 200m | 1.6 |
+| H > 200m | 1.8 |
+
+高层建筑理论退让按表 3-2 中的 `5Q / 8Q / 10Q` 计算。
+
+### 5.4 交叉口退让
+
+交叉口逻辑位于：
+
+```text
+app/reviewer.py
+```
+
+处理策略：
+
+- 先筛选建筑临接道路。
+- 再判断临接道路之间是否几何相交或近接。
+- 确认为交叉口上下文后，按第 3 款取控制值：低、多层建筑不小于 `5m`，高层建筑不小于 `8m`。
+- 最终理论让距取 `max(表3-2结果, 交叉口控制值)`。
+- 避免仅因建筑离两条平行道路都较近而误触发交叉口规则。
+
+### 5.5 实际退让距离
+
+几何计算代码：
+
+```text
+app/geometry.py
+```
+
+计算公式：
+
+```text
+实际让距 = 建筑轮廓边界 到 道路红线面域边界 的最短距离
+```
+
+允许误差：
+
+```text
+±0.1m
+```
+
+符合题目中允许 `±0.1m` 误差的评分要求。
+
+---
+
+## 6. CAD 输入处理
+
+### 6.1 标准 DXF 解析
+
+解析器：
+
+```text
+app/parser.py
+```
+
+适用于：
+
+```text
+test_site_01.dxf
+test_site_02.dxf
+```
+
+图层/标注约定：
+
+| 对象 | 解析方式 |
+|---|---|
+| 道路红线 | `ROAD_REDLINE` 图层 |
+| 道路中心线 | `ROAD_CENTERLINE` 图层 |
+| 道路宽度 | 文字标注，例如 `道路A W=24m` |
+| 建筑 | `BUILDING_LOW`、`BUILDING_MULTI`、`BUILDING_HIGH` |
+| 建筑高度 | XDATA `HZPLAN/1040` 或文字 `H=18m` |
+| 建筑名称 | XDATA `HZPLAN/1000` 或附近文字 |
+
+支持：
+
+- 闭合道路红线面域。
+- 未闭合道路红线边线。
+- 道路中心线 + 宽度构造道路面域。
+- TEXT / MTEXT 文本识别。
+- 建筑文字和 XDATA 双通道提取。
+
+### 6.2 DWG 自动转换
+
+转换器：
+
+```text
+app/converter.py
+```
+
+流程：
+
+```text
+DWG 输入
+  ↓
+查找 ODA File Converter
+  ↓
+自动转换为 DXF
+  ↓
+进入 DWG 专用解析器
+```
+
+如果系统未自动找到 ODA，可设置：
+
+```powershell
+$env:ODA_FILE_CONVERTER="C:\Program Files\ODA\ODAFileConverter\ODAFileConverter.exe"
+```
+
+报告和 Web 页面会显示转换过程，例如：
+
+```text
+接收文件：test_site_03.dwg
+识别为 DWG 文件：准备自动转换为 DXF。
+转换工具：...
+执行 DWG→DXF 转换，用时 0.7171s。
+转换成功：test_site_03.dxf
+```
+
+### 6.3 DWG 专用解析
+
+解析器：
+
+```text
+app/dwg_parser.py
+```
+
+配置入口：
+
+```text
+app/dwg_profile.py
+```
+
+DWG 分支的算法逻辑：
+
+1. ODA 将 DWG 转成 DXF。
+2. `ParseAgent` 判断该图纸来自 DWG 转换，进入 `parse_converted_dwg_dxf()`。
+3. 读取 `app/dwg_profile.py` 中当前模式的图层配置。
+4. 只抽取三类对象：
+   - 建筑主体：`building_polyline_layers` / `building_insert_layers`
+   - 道路候选：`road_layer_keywords`
+   - 红线/控制边界：`redline_layer_keywords`
+5. 排除注释、标注、轴网、绿化、停车、填充、屋面、地下等非审查图层。
+6. 构造道路面域，提取建筑轮廓。
+7. DWG 坐标按毫米级总图坐标处理，距离输出时用 `unit_scale=0.001` 换算为米。
+8. 交给 `ReviewAgent` 执行表 3-2 和第 3 款审查。
+
+需要自己修改 DWG 识别时，优先改 `app/dwg_profile.py`，不要直接改算法：
+
+| 想调整的内容 | 修改字段 |
+|---|---|
+| 建筑主体图层 | `building_polyline_layers`、`building_insert_layers` |
+| 道路图层 | `road_layer_keywords` |
+| 红线/控制边界图层 | `redline_layer_keywords` |
+| 高架图层 | `viaduct_layer_keywords` |
+| 匝道图层 | `ramp_layer_keywords` |
+| 高压线图层 | `powerline_layer_keywords` |
+| 明确不要识别的图层 | `ignore_layers` |
+| 标注/注释关键词 | `annotation_keywords` |
+| 建筑面积过滤 | `min_building_area`、`max_building_area` |
+| 道路候选数量 | `max_review_roads` |
+| 是否四象限分片 | `split_quadrants` |
+
+注意：红线图层只作为道路红线/控制边界辅助，不直接当道路中心线，避免道路面域跑偏。
+
+---
+
+## 7. DWG 三种解析模式
+
+Web 和 CLI 均支持三种模式。
+
+### 7.1 严格审查模式 `strict`
+
+```text
+○ 严格审查模式
+```
+
+用途：输出较干净、适合审查演示的主要对象。
+
+特点：
+
+- 强过滤小构件。
+- 强过滤重复轮廓。
+- 强过滤内部道路碎线。
+- 道路和建筑数量较少。
+- 可能漏掉部分真实对象。
+
+### 7.2 平衡识别模式 `balanced`
+
+```text
+● 平衡识别模式
+```
+
+默认模式。
+
+特点：
+
+- 保留主要建筑和道路候选。
+- 做适度过滤。
+- 兼顾图纸完整度和审查可读性。
+- 适合默认 Demo 演示。
+
+### 7.3 完整解析模式 `raw`
+
+```text
+○ 完整解析模式
+```
+
+用途：检查 DWG 转换结果和解析覆盖情况。
+
+特点：
+
+- 尽量保留道路候选。
+- 尽量保留建筑候选。
+- 保留基础去重，避免同一建筑大量重复编号。
+- 图面会更复杂。
+- 不建议直接作为最终合规审查结论。
+
+### 7.4 命令行选择模式
 
 ```bash
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python main.py test_site_03.dwg --output outputs --dwg-mode strict
+python main.py test_site_03.dwg --output outputs --dwg-mode balanced
+python main.py test_site_03.dwg --output outputs --dwg-mode raw
 ```
 
-## 5. 运行方式
+---
 
-### 方式一：自动扫描当前目录全部 DXF
+## 8. Web 运行方式
 
-```bash
-python main.py
-```
-
-### 方式二：指定一个或多个图纸
-
-```bash
-python main.py test_site_01.dxf test_site_02.dxf --output outputs
-```
-
-### 方式三：启动 Web 上传界面
+启动：
 
 ```bash
 python -m app.web
 ```
 
-然后在浏览器打开：
+浏览器打开：
 
 ```text
 http://127.0.0.1:5000
 ```
 
-界面支持上传 `DXF/DWG` 文件，点击“开始解析并生成报告”后，会自动执行 `ConvertAgent -> ParseAgent -> ReviewAgent -> ReportAgent`，并在页面中返回转换过程、项目概览、耗时统计、HTML 报告预览、标注图和 timing JSON 链接。`DWG` 自动转换依赖 ODA File Converter，可设置环境变量：
+Web 功能：
 
-```powershell
-$env:ODA_FILE_CONVERTER="C:\\Program Files\\ODA\\ODAFileConverter\\ODAFileConverter.exe"
+- 上传 `DXF` / `DWG`。
+- DWG 模式选择：严格审查、平衡识别、完整解析。
+- 显示处理过程。
+- 显示道路数量、建筑数量、合规/不合规数量。
+- 显示 `t_convert / t_parse / t_review / t_render / t_total`。
+- 预览 HTML 报告。
+- 打开标注图和 timing JSON。
+
+Web 上传目录：
+
+```text
+uploads/<job_id>/
 ```
 
-如果未安装转换工具，系统会在页面和报告中给出文字提示。
+Web 输出目录：
 
-运行完成后会在 `outputs/` 下生成：
+```text
+outputs/web/<job_id>/
+```
 
-- `*_report.html`：图文审查报告
-- `*_annotation.png`：总平面标注图
-- `*_timing.json`：单图纸耗时日志
-- `speed_summary.json`：多图纸汇总耗时日志
+---
 
-## 6. 当前图纸约定
+## 9. 命令行运行方式
 
-为了让 Demo 在 2 天内可稳定运行，当前解析器对图层和标注有如下约定：
+### 9.1 安装依赖
 
-### 道路
-
-- 道路红线图层：`ROAD_REDLINE`
-- 道路中心线图层：`ROAD_CENTERLINE`（可选）
-- 道路宽度从图中文字提取，例如：`道路A W=24m`
-
-### 建筑
-
-- 建筑图层：`BUILDING_LOW` / `BUILDING_MULTI` / `BUILDING_HIGH`
-- 建筑名称读取 `HZPLAN` 扩展数据中 `1000` 字段
-- 建筑高度读取 `HZPLAN` 扩展数据中 `1040` 字段
-
-如果没有读到名称或高度，会自动回退为默认值。
-
-## 7. 规则实现说明
-
-### 7.1 表 3-2（Demo 结构化实现）
-
-当前逻辑位于 `app/rules.py`：
-
-1. 按道路宽度分档
-   - `<20m`
-   - `20m~40m`
-   - `>40m`
-
-2. 计算 `Q 值`
-   - 当前 Demo 用 `Q = 建筑高度 / 2`
-   - 该逻辑是为了演示“规范参数查询函数”可插拔
-
-3. 查最小退让
-   - `minimum_setback = max(道路分档基线, Q)`
-
-### 7.2 道路交叉口规则（第 3 款 Demo 化）
-
-- 若同一建筑同时邻接两条及以上道路，则视为触发交叉口附加约束
-- 当前 Demo 实现为：`required_setback += 2.0m`
-
-### 7.3 实际让距计算
-
-- 使用 `shapely` 计算建筑轮廓边界到道路红线面域边界的最短欧氏距离
-- 判定允许 `±0.1m` 容差
-
-## 8. 报告内容
-
-HTML 报告包含：
-
-1. 项目概览
-   - 道路数量
-   - 建筑数量
-   - 审查依据
-
-2. 逐栋审查明细表
-   - 建筑名称
-   - 建筑类型
-   - 高度
-   - 临接道路
-   - 实际让距
-   - 理论让距
-   - 判定结果
-   - 依据链
-
-3. 总平面标注图
-   - 合规建筑绿色显示
-   - 不合规建筑红色高亮
-   - 建筑标签中显示 `实际/理论让距`
-
-4. 审查结论摘要
-   - 合规/不合规建筑数量
-   - 问题清单
-
-5. 速度测试
-   - `t_parse`
-   - `t_review`
-   - `t_render`
-   - `t_total`
-
-## 9. 核心代码可解释性
-
-为了满足题测中“候选人必须能够完整解释核心代码”的要求，项目在以下位置保留了关键注释：
-
-- `app/agent.py`：说明 Agent 的职责边界和编排方式
-- `app/parser.py`：说明 DXF 图层约定与字段提取方式
-- `app/reviewer.py`：说明建筑-道路邻接策略与让距判定逻辑
-- `app/rules.py`：说明 Q 值、查表逻辑与交叉口加严逻辑
-
-## 10. 单元测试
-
-已提供核心规则断言：
+建议 Python 版本：`3.11+`。
 
 ```bash
-pytest -q
+pip install -r requirements.txt
+```
+
+Windows 虚拟环境示例：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### 9.2 自动扫描当前目录 CAD 文件
+
+```bash
+python main.py
+```
+
+### 9.3 指定文件运行
+
+```bash
+python main.py test_site_01.dxf test_site_02.dxf --output outputs
+```
+
+### 9.4 指定 DWG 模式运行
+
+```bash
+python main.py test_site_03.dwg --output outputs --dwg-mode balanced
+```
+
+---
+
+## 10. 输出报告要求对应说明
+
+### 10.1 报告格式
+
+题目允许：HTML、PDF、Markdown + 图片。
+
+本项目选择：
+
+```text
+HTML 报告 + 独立 PNG 标注图片 + timing JSON
+```
+
+### 10.2 报告内容
+
+| 题目要求 | 当前实现 |
+|---|---|
+| 项目概览：道路数量、建筑数量、审查依据 | 已实现 |
+| 逐栋审查明细表：建筑名称、类型、高度、临接道路、实际让距、理论让距、判定结果 | 已实现，并额外输出依据链 |
+| 总平面标注图：合规绿色，不合规红色，标注实际/理论让距 | 已实现。建筑用绿色/红色表达，问题清单列出实际/理论让距 |
+| 审查结论摘要：合规/不合规建筑数量、问题清单 | 已实现 |
+| 审查速度上报：`t_parse / t_review / t_render / t_total` | 已实现，并额外输出 `t_convert` |
+
+### 10.3 输出文件
+
+每张图纸输出：
+
+| 文件 | 说明 |
+|---|---|
+| `*_report.html` | 图文审查报告 |
+| `*_annotation.png` | 总平面标注图 |
+| `*_timing.json` | 单图纸耗时日志 |
+
+批量运行额外输出：
+
+```text
+outputs/speed_summary.json
+```
+
+---
+
+## 11. 标注图说明
+
+标注图由 `app/renderer.py` 生成。
+
+图面规则：
+
+| 图形 | 含义 |
+|---|---|
+| 绿色建筑 | 合规建筑 |
+| 红色建筑 | 不合规建筑 |
+| 浅蓝色面域 | 道路红线面域 |
+| 红色边界 | 道路红线边界 |
+| 绿色虚线 | 道路中心线 |
+| 建筑短标签 | `B1`、`B2` 等建筑编号 |
+| 右侧问题清单 | 不合规对象、临接道路、实际/理论让距 |
+
+说明：为避免标注图拥挤，建筑内部只保留短标签，实际/理论让距统一放入右侧问题清单和逐栋明细表中。
+
+---
+
+## 12. 速度日志
+
+速度字段：
+
+| 字段 | 含义 |
+|---|---|
+| `t_convert` | DWG 转 DXF 耗时；DXF 输入时通常为 0 |
+| `t_parse` | CAD 解析耗时 |
+| `t_review` | 规范推理和合规判定耗时 |
+| `t_render` | 报告和标注图生成耗时 |
+| `t_total` | 总耗时 |
+
+题目要求的字段均包含：
+
+```text
+t_parse
+t_review
+t_render
+t_total
+```
+
+---
+
+## 13. 项目结构
+
+```text
+二轮题测/
+├─ app/
+│  ├─ agent.py          # LangGraph Agent 编排
+│  ├─ cli.py            # 命令行入口
+│  ├─ converter.py      # DWG 自动转换
+│  ├─ dwg_parser.py     # DWG 专用解析器
+│  ├─ dwg_profile.py    # DWG strict/balanced/raw 三种模式配置
+│  ├─ geometry.py       # 几何计算
+│  ├─ models.py         # 数据模型
+│  ├─ parser.py         # 标准 DXF 解析器
+│  ├─ renderer.py       # 报告和标注图渲染
+│  ├─ reviewer.py       # 审查逻辑
+│  ├─ rules.py          # 规则引擎
+│  └─ web.py            # Web 上传界面
+├─ tests/
+│  ├─ test_geometry_and_reviewer.py
+│  └─ test_rules.py
+├─ outputs/             # 报告输出目录
+├─ uploads/             # Web 上传目录
+├─ main.py              # CLI 入口
+├─ requirements.txt
+└─ README.md
+```
+
+---
+
+## 14. 单元测试与断言验证
+
+运行：
+
+```bash
+python -m pytest -q
 ```
 
 测试覆盖：
 
-- 道路宽度分档
-- `Q 值` 计算
-- 表 3-2 Demo 查表
-- 交叉口附加退让
-- 建筑边界到道路红线边界的退让距离计算
-- 完整合规判定链路：同一道路下验证合规建筑与不合规建筑
+- 道路宽度分档。
+- Q 值计算。
+- 表 3-2 查询。
+- 交叉口规则。
+- 建筑到道路红线边界距离。
+- 完整合规判定链路。
 
-## 11. 已知限制
+当前验证结果：
 
-1. 当前仓库直接支持 `DXF`，不直接解析 `DWG`
-   - 如需处理 `test_site_03.dwg`，请先转换为 `DXF`
+```text
+7 passed
+```
 
-2. 当前规则值为 Demo 版结构化实现
-   - 若拿到正式《杭州市城市规划管理技术规定（2026）》表格原文，可直接替换 `app/rules.py` 中的参数与函数
+---
 
-3. 复杂真实图纸可能存在图层不统一、块参照、文字旋转、外部参照等问题
-   - 可在 `ParseAgent` 中继续增强图元清洗与属性识别能力
+## 15. 核心代码可解释性
 
-## 12. 后续可加分扩展
+题目要求候选人必须能够解释核心代码。本项目核心设计如下：
 
-- 扩展表 3-3：高架 / 轨道退让
-- 扩展表 3-4：高压线退让
-- 自动输出 PDF
-- 为真实图纸补充块参照（BLOCK/INSERT）解析
-- 引入正式规范条文知识库与可追溯推理链
+| 文件 | 可解释点 |
+|---|---|
+| `app/agent.py` | Agent 拆分、LangGraph 节点与边、上下文状态传递 |
+| `app/converter.py` | DXF/DWG 输入分流、ODA 转换、转换过程日志 |
+| `app/parser.py` | 标准 DXF 图层解析、文字解析、道路面域构造 |
+| `app/dwg_parser.py` | 真实 DWG 的块参照、填充、图层候选、三种解析模式 |
+| `app/rules.py` | 表 3-2、Q 值、建筑类别、交叉口控制值 |
+| `app/reviewer.py` | 临接道路筛选、实际让距计算、合规判定 |
+| `app/renderer.py` | 标注图、HTML 报告、timing JSON 输出 |
 
-## 13. 交付建议
+---
 
-若用于提交题测，建议最终打包内容包括：
+## 16. 交付物清单对应说明
 
-- 源代码目录
-- `README.md`
-- `outputs/` 中各测试图纸报告
-- `outputs/speed_summary.json`
-- 如有时间，可录制一个从命令执行到报告打开的演示视频
+| 题目交付物 | 当前项目对应内容 |
+|---|---|
+| 源代码完整项目目录 | 当前仓库全部文件 |
+| 依赖文件 | `requirements.txt` |
+| README 运行说明、Agent 架构、技术选型理由 | 本文件 |
+| 三份图纸完整审查报告 | 运行 `python main.py` 或 Web 上传后生成到 `outputs/` |
+| 速度测试日志 | `*_timing.json` 和 `speed_summary.json` |
+| 演示视频/动图 | 未包含，可选项 |
+
+生成三份图纸报告的推荐命令：
+
+```bash
+python main.py test_site_01.dxf test_site_02.dxf test_site_03.dwg --output outputs --dwg-mode balanced
+```
+
+如果想查看 DWG 完整解析覆盖情况：
+
+```bash
+python main.py test_site_03.dwg --output outputs --dwg-mode raw
+```
+
+---
+
+## 17. 已知限制
+
+1. `test_site_03.dwg` 是真实图纸，图层复杂，系统会输出解析置信度。若道路红线识别置信度低，结论需人工复核。
+2. DWG 转 DXF 后可能出现中文字体乱码，因此 DWG 分支优先依赖几何图元、块参照和 HATCH 填充，不完全依赖文字。
+3. `raw` 完整解析模式适合检查对象覆盖情况，不建议直接作为最终审查结论。
+4. 本项目按题目核心要求实现表 3-2 和第 3 款，并支持可选加分项表 3-3 高架/匝道退让、表 3-4 高压线退让。
+5. 若要进一步提高真实 DWG 准确度，建议增加 Web 图层配置面板，由用户指定建筑轮廓层、道路红线层、中心线层和忽略层。
+
+---
+
+## 18. 快速命令汇总
+
+安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+运行测试：
+
+```bash
+python -m pytest -q
+```
+
+启动 Web：
+
+```bash
+python -m app.web
+```
+
+运行 DXF：
+
+```bash
+python main.py test_site_01.dxf --output outputs
+```
+
+运行三份图纸：
+
+```bash
+python main.py test_site_01.dxf test_site_02.dxf test_site_03.dwg --output outputs --dwg-mode balanced
+```
+
+运行 DWG 严格模式：
+
+```bash
+python main.py test_site_03.dwg --output outputs --dwg-mode strict
+```
+
+运行 DWG 完整模式：
+
+```bash
+python main.py test_site_03.dwg --output outputs --dwg-mode raw
+```

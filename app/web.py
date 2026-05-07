@@ -9,9 +9,13 @@ from werkzeug.utils import secure_filename
 
 from app.agent import ReviewWorkflow
 
+# BASE_DIR: 项目根目录。
 BASE_DIR = Path(__file__).resolve().parent.parent
+# UPLOAD_DIR: Web 上传文件保存目录。
 UPLOAD_DIR = BASE_DIR / "uploads"
+# OUTPUT_DIR: Web 报告输出目录，每次上传使用独立 job_id 子目录。
 OUTPUT_DIR = BASE_DIR / "outputs" / "web"
+# ALLOWED_SUFFIXES: 允许上传的 CAD 文件后缀。
 ALLOWED_SUFFIXES = {".dxf", ".dwg"}
 
 app = Flask(__name__)
@@ -180,24 +184,31 @@ form.addEventListener('submit', async e => {
 
 @app.get("/")
 def index() -> str:
+    """Web 首页：返回上传表单和报告预览页面。"""
+
     return render_template_string(PAGE_TEMPLATE)
 
 
 @app.post("/api/review")
 def review_upload():
+    """上传 CAD 并触发 Agent 审查流程，返回报告 URL 和统计信息。"""
+
     uploaded = request.files.get("file")
     if uploaded is None or not uploaded.filename:
         return jsonify({"ok": False, "error": "请先选择 DXF 或 DWG 文件。"}), 400
 
+    # original_name: 经过安全处理后的文件名，避免路径穿越。
     original_name = secure_filename(uploaded.filename) or "drawing.dxf"
     suffix = Path(original_name).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
         return jsonify({"ok": False, "error": "仅支持上传 .dxf 或 .dwg 文件。"}), 400
 
+    # dwg_mode: 前端选择的 DWG 解析模式，非法值回退到 balanced。
     dwg_mode = request.form.get("dwg_mode", "balanced")
     if dwg_mode not in {"strict", "balanced", "raw"}:
         dwg_mode = "balanced"
 
+    # job_id: 本次上传任务 ID，用于隔离不同用户/不同图纸的文件。
     job_id = uuid4().hex[:12]
     job_upload_dir = UPLOAD_DIR / job_id
     job_output_dir = OUTPUT_DIR / job_id
@@ -207,6 +218,7 @@ def review_upload():
     uploaded.save(input_path)
 
     try:
+        # workflow: LangGraph Agent 编排器，内部执行 Convert -> Parse -> Review -> Report。
         workflow = ReviewWorkflow()
         ctx = workflow.run(input_path, job_output_dir, dwg_mode=dwg_mode)
     except ValueError as exc:
@@ -219,11 +231,14 @@ def review_upload():
     if ctx.drawing is None or ctx.results is None or ctx.artifacts is None:
         return jsonify({"ok": False, "error": "审查流程未返回完整结果。"}), 500
 
+    # building_names / failed_buildings: 用于生成首页结果摘要。
     building_names = {building.name for building in ctx.drawing.buildings}
     failed_buildings = {result.building_name for result in ctx.results if not result.passed}
     passed_buildings = len(building_names - failed_buildings)
 
     def artifact_url(kind: str) -> str:
+        """把报告产物路径转换为浏览器可访问的 URL。"""
+
         path = ctx.artifacts[kind]
         return url_for("serve_artifact", job_id=job_id, filename=path.name)
 
@@ -256,6 +271,8 @@ def review_upload():
 
 @app.get("/artifacts/<job_id>/<path:filename>")
 def serve_artifact(job_id: str, filename: str) -> Response:
+    """提供 HTML 报告、PNG 标注图和 timing JSON 的静态访问。"""
+
     return send_from_directory(OUTPUT_DIR / job_id, filename)
 
 

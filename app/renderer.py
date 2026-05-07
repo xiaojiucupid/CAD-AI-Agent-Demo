@@ -17,6 +17,8 @@ from matplotlib.patches import Patch, Polygon as MplPolygon
 from app.models import DrawingData, ReviewResult, Timing
 
 
+# 本文件负责报告输出：一张 PNG 标注图、一份 HTML 审查报告、一份 timing JSON。
+# 规则审查已经在 reviewer.py 完成，这里只做结果可视化和文本组织。
 
 
 def _configure_chinese_font() -> None:
@@ -32,6 +34,8 @@ def _configure_chinese_font() -> None:
 
 
 def _plot_polygon(ax, polygon, **kwargs) -> None:
+    """把 Shapely Polygon/MultiPolygon 绘制到 Matplotlib 坐标轴。"""
+
     if polygon.is_empty:
         return
     geoms = list(polygon.geoms) if hasattr(polygon, "geoms") else [polygon]
@@ -43,10 +47,14 @@ def _plot_polygon(ax, polygon, **kwargs) -> None:
 
 
 def _short_name(name: str) -> str:
+    """缩短建筑名，避免标注图中标签过长。"""
+
     return name.split("_", 1)[0] if "_" in name else name
 
 
 def _worst_result(results: list[ReviewResult], building_name: str) -> ReviewResult | None:
+    """返回某栋建筑最严重的一条审查结果。"""
+
     related = [r for r in results if r.building_name == building_name]
     if not related:
         return None
@@ -54,6 +62,8 @@ def _worst_result(results: list[ReviewResult], building_name: str) -> ReviewResu
 
 
 def _plot_linestring(ax, line, **kwargs) -> None:
+    """把 Shapely LineString/MultiLineString 绘制到 Matplotlib 坐标轴。"""
+
     if line is None or line.is_empty:
         return
     geoms = list(line.geoms) if hasattr(line, "geoms") else [line]
@@ -65,6 +75,8 @@ def _plot_linestring(ax, line, **kwargs) -> None:
 
 
 def _problem_legend_items(results: list[ReviewResult]) -> list[ReviewResult]:
+    """每栋不合规建筑只保留最严重问题，用于右侧问题清单。"""
+
     failed_by_building: dict[str, ReviewResult] = {}
     for result in results:
         if result.passed:
@@ -76,6 +88,8 @@ def _problem_legend_items(results: list[ReviewResult]) -> list[ReviewResult]:
 
 
 def _draw_problem_panel(fig, problems: list[ReviewResult]) -> None:
+    """在标注图右侧绘制问题清单面板。"""
+
     panel = fig.add_axes([0.78, 0.14, 0.2, 0.72])
     panel.axis("off")
     panel.text(0, 1, "问题清单", fontsize=13, fontweight="bold", color="#7f1d1d", va="top")
@@ -105,8 +119,12 @@ def _draw_problem_panel(fig, problems: list[ReviewResult]) -> None:
 
 
 def render_annotation_image(output_png: Path, data: DrawingData, results: list[ReviewResult]) -> None:
+    """生成总平面审查标注图。"""
+
     _configure_chinese_font()
+    # failed: 不合规建筑名称集合，用于决定建筑轮廓颜色。
     failed = {r.building_name for r in results if not r.passed}
+    # problems: 每栋不合规建筑最严重的问题，用于右侧问题清单。
     problems = _problem_legend_items(results)
     fig, ax = plt.subplots(figsize=(16, 10))
     fig.subplots_adjust(left=0.06, right=0.75, top=0.92, bottom=0.08)
@@ -183,6 +201,8 @@ def render_report(
     conversion_steps: list[str] | None = None,
     original_input: Path | None = None,
 ) -> dict[str, Path]:
+    """生成 HTML 报告、PNG 标注图和 timing JSON。"""
+
     stem = input_path.stem
     output_dir.mkdir(parents=True, exist_ok=True)
     image_path = output_dir / f"{stem}_annotation.png"
@@ -190,7 +210,9 @@ def render_report(
     log_path = output_dir / f"{stem}_timing.json"
     render_annotation_image(image_path, data, results)
 
+    # building_names: 所有建筑名称集合，用于统计合规/不合规建筑数量。
     building_names = {b.name for b in data.buildings}
+    # failed_buildings: 至少有一条审查不合规的建筑集合。
     failed_buildings = {r.building_name for r in results if not r.passed}
     passed_count = len(building_names - failed_buildings)
     failed_count = len(failed_buildings)

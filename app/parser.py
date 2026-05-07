@@ -11,31 +11,54 @@ from shapely.ops import unary_union
 from app.geometry import make_linestring, make_polygon
 from app.models import Building, DrawingData, Road
 
+
+# 本文件是“标准 DXF”解析器，面向 test_site_01.dxf / test_site_02.dxf 这类
+# 图层约定清楚的简化测试图。DWG 转换后的真实图纸走 app/dwg_parser.py。
+
+# WIDTH_RE: 从道路文字中提取道路宽度，例如 “道路A W=24m” 或 “红线宽度=36米”。
 WIDTH_RE = re.compile(r"(?:W|宽|红线宽度)\s*[=:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:m|米)?", re.IGNORECASE)
+# ROAD_NAME_RE: 从道路文字中提取道路名称，例如 “道路A”“文一路”“XX大道”。
 ROAD_NAME_RE = re.compile(r"(道路[^:：\s]+|[^:：\s]+路|[^:：\s]+街|[^:：\s]+大道)")
+# HEIGHT_RE: 从建筑文字中提取建筑高度，例如 “H=18m”“建筑高度=54米”。
 HEIGHT_RE = re.compile(r"(?:H|高度|建筑高度)\s*[=:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:m|米)?", re.IGNORECASE)
+# NAME_RE: 从建筑文字中提取建筑名称，例如 “建筑=B1”“楼号=3#”。
 NAME_RE = re.compile(r"(?:建筑|楼栋|楼号)\s*[=:：]?\s*([^,，;；\s]+)")
 
 
 def _polyline_points(entity) -> list[tuple[float, float]]:
+    """读取 LWPOLYLINE 的二维点坐标。
+
+    entity: ezdxf 中的 LWPOLYLINE 图元。
+    返回值: [(x, y), ...]，单位沿用 CAD 图纸单位。
+    """
+
     return [(float(p[0]), float(p[1])) for p in entity.get_points("xy")]
 
 
 def _xdata_value(entity, code: int):
+    """读取 HZPLAN 扩展数据中的指定 code 值。
+
+    entity: CAD 图元。
+    code: XDATA 组码。当前约定 1000=建筑名称，1040=建筑高度。
+    返回值: 找到则返回原值，找不到或图元没有 XDATA 时返回 None。
+    """
+
     try:
         for item in entity.get_xdata("HZPLAN"):
             if item.code == code:
                 return item.value
     except Exception:
+        # 很多图元没有 HZPLAN XDATA，属于正常情况，直接回退到文字识别。
         return None
     return None
 
 
 def _text_content(entity) -> str:
-    """兼容读取 TEXT 与 MTEXT 内容，用于提取道路名称和宽度标注。"""
+    """兼容读取 TEXT 与 MTEXT 内容，用于提取道路名称、宽度、建筑名称和高度。"""
 
     if entity.dxftype() == "MTEXT":
         try:
+            # MTEXT 可能包含控制符，plain_text() 会尽量返回纯文本。
             return entity.plain_text()
         except Exception:
             return getattr(entity, "text", "") or getattr(entity.dxf, "text", "")
@@ -43,6 +66,11 @@ def _text_content(entity) -> str:
 
 
 def _text_insert_point(entity) -> tuple[float, float]:
+    """读取文字插入点。
+
+    文字位置用于把道路宽度文字匹配到最近道路、把建筑高度文字匹配到最近建筑。
+    """
+
     point = getattr(entity.dxf, "insert", None)
     if point is None:
         return (0.0, 0.0)
@@ -50,6 +78,13 @@ def _text_insert_point(entity) -> tuple[float, float]:
 
 
 def _collect_road_text(modelspace) -> list[tuple[str, float, tuple[float, float], str | None]]:
+    """收集道路文字标注。
+
+    modelspace: DXF 模型空间。
+    返回值元素为 (道路名称, 道路宽度, 文字坐标, 方向提示)。
+    方向提示用于多条道路都很近时，优先把横向文字匹配给横向道路。
+    """
+
     road_texts: list[tuple[str, float, tuple[float, float], str | None]] = []
     for text in modelspace.query("TEXT MTEXT"):
         raw = _text_content(text)
@@ -62,6 +97,12 @@ def _collect_road_text(modelspace) -> list[tuple[str, float, tuple[float, float]
 
 
 def _collect_building_text(modelspace) -> list[tuple[str | None, float | None, tuple[float, float]]]:
+    """收集建筑名称和高度文字。
+
+    返回值元素为 (建筑名称或 None, 建筑高度或 None, 文字坐标)。
+    后续会用最近邻把文字匹配给建筑轮廓。
+    """
+
     building_texts: list[tuple[str | None, float | None, tuple[float, float]]] = []
     for text in modelspace.query("TEXT MTEXT"):
         raw = _text_content(text)
@@ -79,6 +120,12 @@ def _collect_building_text(modelspace) -> list[tuple[str | None, float | None, t
 
 
 def _nearest_text(point, texts):
+    """从文字列表中找离指定点最近的一条。
+
+    point: 通常是道路或建筑的 centroid。
+    texts: `_collect_road_text` 或 `_collect_building_text` 的结果。
+    """
+
     if not texts:
         return None
     px, py = point
@@ -86,6 +133,8 @@ def _nearest_text(point, texts):
 
 
 def _nearest_road_text_to_geometry(geometry, texts, used_indexes: set[int]):
+    """给道路面域匹配最近且未使用的道路文字。"""
+
     if not texts:
         return None
     ordered = sorted(
@@ -107,6 +156,8 @@ def _line_orientation(line: LineString) -> str:
 
 
 def _text_orientation_hint(raw: str) -> str | None:
+    """从文字内容中识别道路方向提示。"""
+
     if "南北" in raw or "纵" in raw or "竖" in raw:
         return "vertical"
     if "东西" in raw or "横" in raw:
@@ -115,6 +166,11 @@ def _text_orientation_hint(raw: str) -> str | None:
 
 
 def _road_text_for_centerline(centerline: LineString, texts, used_indexes: set[int]):
+    """给道路中心线匹配道路名称和宽度文字。
+
+    优先使用方向一致的文字；如果没有方向提示，再使用最近文字。
+    """
+
     if not texts:
         return None
     orientation = _line_orientation(centerline)
@@ -129,6 +185,8 @@ def _road_text_for_centerline(centerline: LineString, texts, used_indexes: set[i
 
 
 def _building_type(layer: str, name: str, height: float) -> str:
+    """根据图层、名称和高度粗略推断建筑类型。"""
+
     text = f"{layer}_{name}".upper()
     if "HIGH" in text or height >= 50:
         return "高层"
@@ -138,11 +196,14 @@ def _building_type(layer: str, name: str, height: float) -> str:
 
 
 def parse_drawing(path: str | Path) -> DrawingData:
-    """解析 DXF 中的道路红线与建筑轮廓。
+    """解析标准 DXF 中的道路红线与建筑轮廓。
 
-    依赖图层命名：ROAD_REDLINE / BUILDING_LOW|MULTI|HIGH；建筑高度读取
-    HZPLAN XDATA 1040 字段，建筑名称读取 HZPLAN XDATA 1000 字段。
-    当前 Demo 使用 `ezdxf` 直接解析 DXF；若输入为 DWG，会提示先转 DXF。
+    输入要求：
+    - 道路红线图层：ROAD_REDLINE；
+    - 道路中心线图层：ROAD_CENTERLINE；
+    - 建筑图层：BUILDING_LOW / BUILDING_MULTI / BUILDING_HIGH；
+    - 道路宽度文字：例如 W=24m；
+    - 建筑高度文字或 XDATA：例如 H=18m 或 HZPLAN/1040。
     """
 
     path = Path(path)
@@ -151,13 +212,21 @@ def parse_drawing(path: str | Path) -> DrawingData:
             "检测到 DWG 输入。当前 Demo 仅直接解析 DXF，请先使用 ODA File Converter、AutoCAD 或 Teigha 将 DWG 转为 DXF 后再审查。"
         )
 
+    # doc: ezdxf 读取后的文档对象。
     doc = ezdxf.readfile(path)
+    # msp: 模型空间，包含总平面图中的几何图元和文字图元。
     msp = doc.modelspace()
+    # road_texts: 道路名称和道路宽度标注。
     road_texts = _collect_road_text(msp)
+    # building_texts: 建筑名称和建筑高度标注。
     building_texts = _collect_building_text(msp)
+    # road_polys: 已闭合的道路红线面域。
     road_polys = []
+    # road_lines: 未闭合的道路红线边线。
     road_lines: list[LineString] = []
+    # buildings: 解析出的建筑对象。
     buildings: list[Building] = []
+    # centerlines: 道路中心线。
     centerlines = []
 
     for entity in msp:
@@ -190,7 +259,9 @@ def parse_drawing(path: str | Path) -> DrawingData:
                 )
             )
 
+    # roads: 最终道路对象。优先用道路面域，其次中心线+宽度，最后边线+宽度。
     roads: list[Road] = []
+    # used_road_text_indexes: 防止多条道路重复使用同一个宽度文字。
     used_road_text_indexes: set[int] = set()
     if road_polys:
         # 闭合道路红线已是面域，按相交/相邻合并。
@@ -204,7 +275,7 @@ def parse_drawing(path: str | Path) -> DrawingData:
 
     if not roads and road_lines:
         # 真实/简化图纸常把道路红线画成两条未闭合边线。此时优先用道路中心线
-        # 与文字标注宽度构造道路面域；没有中心线时再用红线两两合并的兜底策略。
+        # 与文字标注宽度构造道路面域；没有中心线时再用红线边线 buffer 兜底。
         if centerlines:
             for idx, centerline in enumerate(centerlines):
                 nearest = _road_text_for_centerline(centerline, road_texts, used_road_text_indexes)

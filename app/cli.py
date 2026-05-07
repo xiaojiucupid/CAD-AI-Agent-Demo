@@ -8,6 +8,8 @@ from app.agent import ReviewWorkflow
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构建命令行参数解析器。"""
+
     parser = argparse.ArgumentParser(description="建筑退让道路红线自动审查 Demo")
     parser.add_argument("inputs", nargs="*", help="待审查 CAD 文件路径；为空时自动扫描当前目录下的 *.dxf/*.dwg")
     parser.add_argument("--output", default="outputs", help="报告输出目录")
@@ -21,9 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI 入口：批量审查输入 CAD 并汇总速度日志。"""
+
     parser = build_parser()
     args = parser.parse_args()
 
+    # inputs: 用户显式传入文件时使用传入列表；否则自动扫描当前目录下的 DXF/DWG。
     inputs = [Path(item) for item in args.inputs] if args.inputs else sorted(
         [*Path.cwd().glob("*.dxf"), *Path.cwd().glob("*.dwg")]
     )
@@ -33,6 +38,7 @@ def main() -> None:
     workflow = ReviewWorkflow()
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+    # summary: 所有图纸的速度统计，最后写入 speed_summary.json。
     summary: list[dict[str, float | str]] = []
     for drawing in inputs:
         try:

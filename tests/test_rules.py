@@ -3,7 +3,7 @@ from shapely.geometry import Polygon
 from app.geometry import distance_between_boundaries
 from app.models import Building, DrawingData, Road
 from app.reviewer import review_drawing
-from app.rules import apply_intersection_rule, classify_building_category, classify_width_band, infer_q_value, lookup_table_3_2
+from app.rules import apply_intersection_rule, classify_building_category, classify_width_band, infer_q_value, lookup_table_3_2, lookup_table_3_3, lookup_table_3_4
 
 
 def test_width_band():
@@ -26,8 +26,19 @@ def test_q_value_and_lookup():
 
 def test_intersection_rule():
     assert apply_intersection_rule(10, 1)[0] == 10
-    assert apply_intersection_rule(4, 2, [18, 18])[0] == 5
-    assert apply_intersection_rule(6, 2, [24, 30])[0] == 6
+    assert apply_intersection_rule(4, 2, [18, 18], "multi")[0] == 5
+    assert apply_intersection_rule(6, 2, [24, 30], "multi")[0] == 6
+    assert apply_intersection_rule(6, 2, [24, 30], "high")[0] == 8
+
+
+def test_lookup_table_3_3_and_3_4():
+    assert lookup_table_3_3("viaduct", "multi", "居住建筑").minimum_setback == 30
+    assert lookup_table_3_3("viaduct", "high", "居住建筑").minimum_setback == 40
+    assert lookup_table_3_3("ramp", "multi", "商业建筑").minimum_setback == 10
+    assert lookup_table_3_3("ramp", "high", "商业建筑").minimum_setback == 15
+    assert lookup_table_3_4(500).minimum_setback == 30
+    assert lookup_table_3_4(220).minimum_setback == 15
+    assert lookup_table_3_4(110).minimum_setback == 10
 
 
 def test_setback_distance_between_building_and_road_redline():

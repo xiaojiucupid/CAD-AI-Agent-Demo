@@ -46,6 +46,8 @@ class Building:
     btype: str
     # layer: 建筑来源图层，便于解释识别依据。
     layer: str
+    # floors: 建筑楼层数；无法从文字/图层推断时为 0。
+    floors: int = 0
 
 
 @dataclass
@@ -80,6 +82,10 @@ class DrawingData:
     roads: list[Road] = field(default_factory=list)
     # buildings: 图纸中识别出的建筑对象。
     buildings: list[Building] = field(default_factory=list)
+    # scenario_core_redlines: 场景化红线候选，key 为场景名，value 为参与退让计算的核心红线对象列表。
+    scenario_core_redlines: dict[str, list[Road]] = field(default_factory=dict)
+    # scenario_buildings: 场景化建筑候选，key 为场景名，value 为该场景使用的建筑集合。
+    scenario_buildings: dict[str, list[Building]] = field(default_factory=dict)
     # parse_warnings: 解析阶段产生的提示或低置信度说明。
     parse_warnings: list[str] = field(default_factory=list)
     # parse_mode: 解析模式标识，例如 dxf-standard 或 dwg-profile。

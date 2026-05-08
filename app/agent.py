@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
@@ -76,8 +77,8 @@ class AgentContext:
     artifacts: dict[str, Path] | None = None
     # llm_config: 预留大模型配置，当前几何审查不依赖 LLM。
     llm_config: LLMConfig = field(default_factory=LLMConfig)
-    # dwg_mode: DWG 专用解析模式，strict/balanced/raw。
-    dwg_mode: str = "balanced"
+    # dwg_mode: 保留旧字段用于兼容调用方；实际 DWG 解析统一使用严格模式。
+    dwg_mode: str = "strict"
 
 
 class WorkflowState(TypedDict, total=False):
@@ -151,48 +152,81 @@ class ReportAgent(BaseAgent):
         if ctx.drawing is None or ctx.results is None:
             raise RuntimeError("ParseAgent and ReviewAgent must run before ReportAgent")
         report_input = ctx.review_path or ctx.input_path
-        ctx.artifacts = render_report(
-            report_input,
-            ctx.output_dir,
-            ctx.drawing,
-            ctx.results,
-            ctx.timing,
-            conversion_steps=ctx.conversion.steps if ctx.conversion else [],
-            original_input=ctx.input_path,
-        )
+
+        if not (ctx.conversion and ctx.conversion.converted):
+            ctx.artifacts = render_report(
+                report_input,
+                ctx.output_dir,
+                ctx.drawing,
+                ctx.results,
+                ctx.timing,
+                conversion_steps=ctx.conversion.steps if ctx.conversion else [],
+                original_input=ctx.input_path,
+            )
+            ctx.timing.t_render = time.perf_counter() - started
+            self._rewrite_final_timing(ctx)
+            return ctx
+
+        from app.dwg_renderer import render_dwg_scenario_report
+
+        ctx.artifacts = {}
+        scenario_summaries: dict[str, list[ReviewResult]] = {}
+        scenario_titles = {
+            "site_prop_redline": "第二组：G-SITE-PROP / 总图-征地红线核心红线退避计算",
+            "building_site_open_redline": "第三组：建筑高层多层/屋顶外轮廓 + 用地/征地红线 + 开放空间核心红线退避计算",
+        }
+        for scenario_key in ("site_prop_redline", "building_site_open_redline"):
+            title = scenario_titles[scenario_key]
+            scenario_roads = ctx.drawing.scenario_core_redlines.get(scenario_key, [])
+            scenario_buildings = ctx.drawing.scenario_buildings.get(scenario_key, ctx.drawing.buildings)
+            scenario_drawing = copy.copy(ctx.drawing)
+            scenario_drawing.roads = scenario_roads
+            scenario_drawing.buildings = scenario_buildings
+            scenario_drawing.parse_warnings = [*ctx.drawing.parse_warnings, f"{title}：本图仅使用该场景核心红线集合参与退避计算。"]
+            scenario_results = review_drawing(scenario_drawing)
+            scenario_summaries[scenario_key] = scenario_results
+            scenario_artifacts = render_dwg_scenario_report(
+                report_input,
+                ctx.output_dir,
+                scenario_drawing,
+                scenario_results,
+                ctx.timing,
+                conversion_steps=ctx.conversion.steps if ctx.conversion else [],
+                original_input=ctx.input_path,
+                suffix=scenario_key,
+                title=title,
+            )
+            prefixed = {f"{scenario_key}_{key}": value for key, value in scenario_artifacts.items()}
+            ctx.artifacts.update(prefixed)
+        ctx.results = scenario_summaries.get("site_prop_redline", [])
         ctx.timing.t_render = time.perf_counter() - started
         self._rewrite_final_timing(ctx)
-        ctx.artifacts = render_report(
-            report_input,
-            ctx.output_dir,
-            ctx.drawing,
-            ctx.results,
-            ctx.timing,
-            conversion_steps=ctx.conversion.steps if ctx.conversion else [],
-            original_input=ctx.input_path,
-        )
         return ctx
 
     @staticmethod
     def _rewrite_final_timing(ctx: AgentContext) -> None:
         """渲染结束后回写最终耗时，保证 timing JSON 与内存上下文一致。"""
 
-        if not ctx.artifacts or "timing" not in ctx.artifacts:
+        if not ctx.artifacts:
             return
-        ctx.artifacts["timing"].write_text(
-            json.dumps(
-                {
-                    "t_convert": ctx.timing.t_convert,
-                    "t_parse": ctx.timing.t_parse,
-                    "t_review": ctx.timing.t_review,
-                    "t_render": ctx.timing.t_render,
-                    "t_total": ctx.timing.t_total,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        timing_paths = [path for key, path in ctx.artifacts.items() if key.endswith("timing")]
+        if not timing_paths:
+            return
+        for timing_path in timing_paths:
+            timing_path.write_text(
+                json.dumps(
+                    {
+                        "t_convert": ctx.timing.t_convert,
+                        "t_parse": ctx.timing.t_parse,
+                        "t_review": ctx.timing.t_review,
+                        "t_render": ctx.timing.t_render,
+                        "t_total": ctx.timing.t_total,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
 
 class LangGraphReviewWorkflow:
@@ -238,8 +272,11 @@ class LangGraphReviewWorkflow:
     def _report_node(self, state: WorkflowState) -> WorkflowState:
         return {"ctx": self.report_agent.run(state["ctx"])}
 
-    def run(self, input_path: str | Path, output_dir: str | Path, dwg_mode: str = "balanced") -> AgentContext:
-        """执行一次完整审查任务。"""
+    def run(self, input_path: str | Path, output_dir: str | Path, dwg_mode: str = "strict") -> AgentContext:
+        """执行一次完整审查任务。
+
+        dwg_mode 参数仅为兼容旧调用方保留，DWG 实际统一使用严格模式。
+        """
 
         ctx = AgentContext(
             input_path=Path(input_path),

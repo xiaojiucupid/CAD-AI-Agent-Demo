@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from math import cos, radians, sin
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import ezdxf
 from shapely.affinity import affine_transform, scale
-from shapely.geometry import LineString, Polygon, box
+from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from app.dwg_profile import DEFAULT_DWG_PROFILE, DWGProfile
@@ -18,6 +18,10 @@ from app.parser import _building_type, _collect_building_text, _collect_road_tex
 CENTER_LAYER_KEYWORDS = ("CENTER", "CNTR", "中心")
 # DWG_UNIT_SCALE: 真实 DWG 常以毫米为图纸单位，输出审查距离时乘以 0.001 换算为米。
 DWG_UNIT_SCALE = 0.001
+# SCENARIO_SITE_PROP: 第二组输出，使用 G-SITE-PROP 和“总图-征地红线”作为核心红线。
+SCENARIO_SITE_PROP = "site_prop_redline"
+# SCENARIO_BUILDING_SITE_OPEN: 第三组输出，叠加高层/多层建筑、屋顶建筑外轮廓、用地红线和开放空间边界作为核心红线。
+SCENARIO_BUILDING_SITE_OPEN = "building_site_open_redline"
 
 
 def _entity_points(entity) -> list[tuple[float, float]]:
@@ -59,13 +63,22 @@ def _is_ignored_layer(layer: str, profile: DWGProfile) -> bool:
     return any(upper.startswith(prefix.upper()) for prefix in profile.ignore_layer_prefixes)
 
 
-def _is_road_layer(layer: str, profile: DWGProfile) -> bool:
-    """判断图层是否是普通道路系统图层。"""
+def _is_road_boundary_layer(layer: str, profile: DWGProfile) -> bool:
+    """判断图层是否是普通道路红线/道路边界图层。"""
 
     if _is_ignored_layer(layer, profile):
         return False
     upper = layer.upper()
-    return any(keyword.upper() in upper for keyword in profile.road_layer_keywords)
+    return any(keyword.upper() in upper for keyword in profile.road_boundary_layer_keywords)
+
+
+def _is_road_centerline_layer(layer: str, profile: DWGProfile) -> bool:
+    """判断图层是否是道路中心线图层。"""
+
+    if _is_ignored_layer(layer, profile):
+        return False
+    upper = layer.upper()
+    return any(keyword.upper() in upper for keyword in profile.road_centerline_layer_keywords) or _is_center_layer(layer)
 
 
 def _is_redline_layer(layer: str, profile: DWGProfile) -> bool:
@@ -134,6 +147,51 @@ def _parse_voltage_from_layer(layer: str) -> float:
     return float(match.group(1)) if match else 110.0
 
 
+def _core_redline_roads(geometries: list, label: str, profile: DWGProfile) -> list[Road]:
+    """把指定图层几何转换为场景化核心红线控制对象。"""
+
+    roads: list[Road] = []
+    valid = [geom.buffer(0) if isinstance(geom, Polygon) else geom for geom in geometries if geom is not None and not geom.is_empty]
+    for idx, geom in enumerate(sorted(valid, key=lambda item: item.length if isinstance(item, LineString) else item.area, reverse=True)[: profile.max_review_roads], start=1):
+        if isinstance(geom, Polygon):
+            polygon = geom
+            centerline = None
+        else:
+            polygon = geom.buffer(1.0 / DWG_UNIT_SCALE, cap_style="square", join_style="mitre")
+            centerline = geom
+        roads.append(
+            Road(
+                name=f"{label}{idx}",
+                polygon=polygon,
+                centerline=centerline,
+                width=profile.default_road_width,
+                source_layer=label,
+                kind="road",
+            )
+        )
+    return roads
+
+
+def _width_from_parallel_boundaries(centerline: LineString, road_lines: list[LineString], profile: DWGProfile) -> float | None:
+    """利用中心线两侧平行道路边界估算道路宽度。"""
+
+    candidates = []
+    for line in road_lines:
+        if line.length < centerline.length * 0.25:
+            continue
+        distance = line.distance(centerline)
+        if distance <= 0 or distance * DWG_UNIT_SCALE > 80:
+            continue
+        candidates.append((distance, line))
+    if len(candidates) < 2:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    width = (candidates[0][0] + candidates[1][0]) * DWG_UNIT_SCALE
+    if 4 <= width <= 80:
+        return width
+    return None
+
+
 def _build_roads(
     road_polygons: list[Polygon],
     road_lines: list[LineString],
@@ -141,7 +199,7 @@ def _build_roads(
     road_texts,
     profile: DWGProfile,
 ) -> list[Road]:
-    """按标准 DXF 的范式构造道路：优先闭合红线面，其次中心线+宽度，最后边线缓冲。"""
+    """按图层语义构造道路：道路边界优先，中心线用于命名、交叉口和宽度兜底。"""
 
     # roads: 最终输出的道路/线性退让控制对象。
     roads: list[Road] = []
@@ -153,15 +211,16 @@ def _build_roads(
         for idx, geom in enumerate(sorted(geoms, key=lambda item: item.area, reverse=True)[: profile.max_review_roads]):
             text = _nearest_text((geom.centroid.x, geom.centroid.y), road_texts)
             name, width = (text[0], text[1]) if text else (f"道路{idx + 1}", profile.default_road_width)
-            roads.append(Road(name=name, polygon=geom, centerline=None, width=width, source_layer="DWG_ROAD_POLYGON"))
+            roads.append(Road(name=name, polygon=geom, centerline=None, width=width, source_layer="DWG_ROAD_BOUNDARY_POLYGON"))
         return roads
 
     if centerlines:
-        # chosen_centers: 选择较长的中心线作为主要道路，减少短碎线干扰。
         chosen_centers = sorted(centerlines, key=lambda line: line.length, reverse=True)[: profile.max_review_roads]
         for idx, centerline in enumerate(chosen_centers):
             text = _road_text_for_centerline(centerline, road_texts, used)
-            name, width = (text[0], text[1]) if text else (f"道路{idx + 1}", profile.default_road_width)
+            inferred_width = _width_from_parallel_boundaries(centerline, road_lines, profile)
+            width = text[1] if text else inferred_width or profile.default_road_width
+            name = text[0] if text else f"道路{idx + 1}"
             roads.append(
                 Road(
                     name=name,
@@ -173,7 +232,7 @@ def _build_roads(
             )
         return roads
 
-    # 没有道路面域和中心线时，退化为道路边线 buffer，作为真实 DWG 的兜底策略。
+    # 没有中心线时，退化为道路边界 buffer；这是只识别到 G-ROAD-市政/园区边界时的兜底。
     for idx, line in enumerate(_long_road_lines(road_lines)[: profile.max_review_roads]):
         text = _nearest_text((line.centroid.x, line.centroid.y), road_texts)
         name, width = (text[0], text[1]) if text else (f"道路{idx + 1}", profile.default_road_width)
@@ -183,7 +242,7 @@ def _build_roads(
                 polygon=line.buffer((width / DWG_UNIT_SCALE) / 2.0, cap_style="square", join_style="mitre"),
                 centerline=line,
                 width=width,
-                source_layer="DWG_ROAD_LINE_BUFFERED",
+                source_layer="DWG_ROAD_BOUNDARY_BUFFERED",
             )
         )
     return roads
@@ -332,6 +391,26 @@ def _dedupe_nested_buildings(candidates: list[tuple[Polygon, str]]) -> list[tupl
     return sorted(kept, key=lambda item: (item[0].centroid.y, item[0].centroid.x), reverse=True)
 
 
+def _merge_large_roof_buildings(candidates: list[tuple[Polygon, str]], profile: DWGProfile) -> list[tuple[Polygon, str]]:
+    """用屋顶外轮廓补齐大建筑，避免第二组漏掉大体量建筑。"""
+
+    roof_layers = {"G-BLDG-ROOF", "G-BLOG-ROOF"}
+    body = [(polygon, layer) for polygon, layer in candidates if layer.upper() not in roof_layers]
+    roofs = [(polygon, layer) for polygon, layer in candidates if layer.upper() in roof_layers]
+    kept = list(body)
+    for roof_polygon, roof_layer in sorted(roofs, key=lambda item: item[0].area, reverse=True):
+        if roof_polygon.area < profile.min_building_area or roof_polygon.area > profile.max_building_area:
+            continue
+        overlaps_body = any(
+            roof_polygon.intersects(body_polygon.buffer(3_000)) and min(roof_polygon.area, body_polygon.area) / max(roof_polygon.area, body_polygon.area) > 0.03
+            for body_polygon, _body_layer in body
+        )
+        contains_body = any(roof_polygon.buffer(2_000).contains(body_polygon.representative_point()) for body_polygon, _body_layer in body)
+        if not overlaps_body or contains_body:
+            kept.append((roof_polygon, roof_layer))
+    return kept
+
+
 def _hatch_polygons(entity) -> list[Polygon]:
     """从 HATCH 边界中提取多边形候选。"""
 
@@ -347,6 +426,38 @@ def _hatch_polygons(entity) -> list[Polygon]:
             if polygon.area > 1:
                 polygons.append(polygon)
     return polygons
+
+
+def _resolve_building_text(polygon: Polygon, building_texts):
+    """优先用落在建筑内/邻近建筑的文字，避免大建筑被远处文字错配。"""
+
+    inside = [text for text in building_texts if polygon.buffer(1_500).contains(Point(text[2][0], text[2][1]))]
+    if inside:
+        return min(inside, key=lambda item: polygon.centroid.distance(Point(item[2][0], item[2][1])))
+    near = [text for text in building_texts if polygon.distance(Point(text[2][0], text[2][1])) <= 8_000]
+    if near:
+        return min(near, key=lambda item: polygon.centroid.distance(Point(item[2][0], item[2][1])))
+    return _nearest_text((polygon.centroid.x, polygon.centroid.y), building_texts)
+
+
+def _building_floor_height_from_layer(layer: str, text_height: float, text_floors: int) -> tuple[int, float]:
+    """根据图层语义和文字结果补齐楼层/高度。"""
+
+    upper = layer.upper()
+    floors = text_floors
+    height = text_height
+    if floors <= 0:
+        if "HIGH" in upper:
+            floors = 18
+        elif "MULT" in upper:
+            floors = 6
+        elif "ROOF" in upper or "OTLN" in upper:
+            floors = 6
+    if height <= 0 and floors > 0:
+        height = floors * 3.0
+    if height <= 0:
+        height = 54.0 if "HIGH" in upper else 18.0
+    return floors, height
 
 
 def _build_buildings(doc, modelspace, building_texts, profile: DWGProfile) -> list[Building]:
@@ -389,6 +500,8 @@ def _build_buildings(doc, modelspace, building_texts, profile: DWGProfile) -> li
             candidates = candidates + hatch_candidates
     if not candidates:
         return []
+    candidates = _merge_large_roof_buildings(candidates, profile)
+
     if profile.split_quadrants:
         merged: list[tuple[Polygon, str]] = []
         for group in _split_candidates_by_quadrant(candidates):
@@ -408,9 +521,12 @@ def _build_buildings(doc, modelspace, building_texts, profile: DWGProfile) -> li
     candidates = [(polygon, layer) for polygon, layer in candidates if profile.min_building_area <= polygon.area <= profile.max_building_area]
 
     for idx, (polygon, layer) in enumerate(candidates, start=1):
-        nearest = _nearest_text((polygon.centroid.x, polygon.centroid.y), building_texts)
-        height = float(nearest[1] if nearest and nearest[1] is not None else 0.0)
-        name = f"B{idx}"
+        nearest = _resolve_building_text(polygon, building_texts)
+        text_height = float(nearest[1] if nearest and nearest[1] is not None else 0.0)
+        text_floors = int(nearest[3]) if nearest and len(nearest) > 3 and nearest[3] is not None else max(0, round(text_height / 3.0))
+        floors, height = _building_floor_height_from_layer(layer, text_height, text_floors)
+        inferred_name = nearest[0] if nearest and nearest[0] else None
+        name = str(inferred_name) if inferred_name else f"B{idx}"
         buildings.append(
             Building(
                 name=name,
@@ -418,6 +534,7 @@ def _build_buildings(doc, modelspace, building_texts, profile: DWGProfile) -> li
                 height=height,
                 btype=_building_type(layer, name, height),
                 layer=layer,
+                floors=floors,
             )
         )
     return buildings
@@ -448,12 +565,19 @@ def parse_converted_dwg_dxf(path: str | Path, profile: DWGProfile = DEFAULT_DWG_
     special_lines: list[tuple[LineString, str, str, float]] = []
     # centerlines: 道路中心线候选。
     centerlines: list[LineString] = []
+    # scenario_site_prop_geoms: 第二组场景专用核心红线几何。
+    scenario_site_prop_geoms: list = []
+    # scenario_open_space_geoms: 第三组场景额外加入的开放空间边界几何。
+    scenario_open_space_geoms: list = []
+    # scenario_building_geoms: 第三组场景纳入核心红线的高层/多层建筑轮廓。
+    scenario_building_geoms: list[Polygon] = []
     warnings: list[str] = [
         f"DWG 专用解析模式：{profile.label}。{profile.description}",
         "DWG 坐标按毫米级总图坐标处理，审查距离输出时按 0.001 换算为米。",
         "完整解析模式会将大图按空间范围等分为四个象限，分别解析候选对象后再合并，降低大图尺度差异带来的误判。" if profile.split_quadrants else "当前模式按全图统一解析候选对象。",
-        "已按图层/颜色语义过滤 DIM/TEXT/AXIS 标注层、A_N/G_N 注释层、绿化/铺装/停车/屋面等非审查对象。",
-        "红色 G_SITE_REDL/G-SITE-PROP 类图层仅作为红线/权属控制边界辅助过滤，不直接当道路中心线；道路来自 G_DRIV_ROAD/G-ROAD/G-SITE-BLUE 类图层。",
+        "已按图层语义过滤 DIM/TEXT/AXIS 标注层、A_N/G_N 注释层、绿化/铺装/停车等非审查对象。",
+        "普通道路优先来自 G-ROAD-市政、G-ROAD-园区、G_DRIV_ROAD；道路中心线优先来自 G-ROAD-CNTR；G-SITE-PROP、G_SITE_REDL、总图-征地红线只作为核心红线场景，不混入普通道路退距计算。",
+        "建筑主体优先识别 G-BLDG-HIGH、G-BLDG-MULT、G-BLDG-OTLN，并可用 G-BLDG-ROOF / G-BLOG-ROOF 补齐大建筑外轮廓。",
         "审查规则包含题目核心表3-2、第3款，并支持可选加分项表3-3高架/匝道和表3-4高压线退让。",
     ]
 
@@ -477,16 +601,22 @@ def parse_converted_dwg_dxf(path: str | Path, profile: DWGProfile = DEFAULT_DWG_
             continue
         if _is_redline_layer(layer, profile):
             redline_geoms.append(geom)
-        # is_road_candidate: 普通道路候选，来自道路专用层或 profile 允许的市政边界层。
-        is_road_candidate = _is_road_layer(layer, profile) or (profile.include_blue_boundary_roads and _is_municipal_boundary_layer(layer, profile))
-        if is_road_candidate:
+            scenario_site_prop_geoms.append(geom)
+        if any(keyword.upper() in layer.upper() for keyword in profile.scenario_open_space_redline_keywords):
+            scenario_open_space_geoms.append(geom)
+        if entity.dxftype() == "LWPOLYLINE" and layer.upper() in {"G-BLDG-HIGH", "G-BLDG-MULT", "G-BLDG-ROOF", "G-BLOG-ROOF"} and isinstance(geom, Polygon):
+            scenario_building_geoms.append(geom)
+        # 普通道路候选严格按图层语义拆分：道路边界与道路中心线分开识别。
+        is_road_boundary = _is_road_boundary_layer(layer, profile) or (profile.include_blue_boundary_roads and _is_municipal_boundary_layer(layer, profile))
+        is_road_centerline = _is_road_centerline_layer(layer, profile)
+        if is_road_centerline and isinstance(geom, LineString):
+            centerlines.append(geom)
+            continue
+        if is_road_boundary:
             if isinstance(geom, Polygon):
                 road_polygons.append(geom)
             elif isinstance(geom, LineString):
-                if _is_center_layer(layer):
-                    centerlines.append(geom)
-                else:
-                    road_lines.append(geom)
+                road_lines.append(geom)
 
     # 道路中心线和边线筛选：完整模式按四象限分片，其他模式保留长线。
     if centerlines:
@@ -521,6 +651,19 @@ def parse_converted_dwg_dxf(path: str | Path, profile: DWGProfile = DEFAULT_DWG_
 
     # roads: 普通道路对象，按“道路面域 > 中心线 > 边线 buffer”的优先级构造。
     roads = _build_roads(road_polygons, road_lines, centerlines, road_texts, profile)
+    scenario_core_redlines = {
+        SCENARIO_SITE_PROP: _core_redline_roads(scenario_site_prop_geoms, "用地/征地红线", profile),
+        SCENARIO_BUILDING_SITE_OPEN: _core_redline_roads(
+            scenario_building_geoms + scenario_site_prop_geoms + scenario_open_space_geoms,
+            "建筑-用地-开放核心红线",
+            profile,
+        ),
+    }
+    site_prop_buildings = _build_buildings(doc, msp, building_texts, profile)
+    scenario_buildings = {
+        SCENARIO_SITE_PROP: site_prop_buildings,
+        SCENARIO_BUILDING_SITE_OPEN: buildings,
+    }
     for idx, (line, kind, label, width) in enumerate(special_lines, start=1):
         roads.append(
             Road(
@@ -555,6 +698,8 @@ def parse_converted_dwg_dxf(path: str | Path, profile: DWGProfile = DEFAULT_DWG_
     return DrawingData(
         roads=roads,
         buildings=buildings,
+        scenario_core_redlines=scenario_core_redlines,
+        scenario_buildings=scenario_buildings,
         parse_warnings=warnings,
         parse_mode="dwg-profile",
         confidence=confidence,

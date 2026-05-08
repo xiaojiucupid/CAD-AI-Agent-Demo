@@ -13,12 +13,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="建筑退让道路红线自动审查 Demo")
     parser.add_argument("inputs", nargs="*", help="待审查 CAD 文件路径；为空时自动扫描当前目录下的 *.dxf/*.dwg")
     parser.add_argument("--output", default="outputs", help="报告输出目录")
-    parser.add_argument(
-        "--dwg-mode",
-        choices=["strict", "balanced", "raw"],
-        default="balanced",
-        help="DWG 专用解析模式：strict=严格审查，balanced=平衡识别，raw=完整解析",
-    )
     return parser
 
 
@@ -42,7 +36,7 @@ def main() -> None:
     summary: list[dict[str, float | str]] = []
     for drawing in inputs:
         try:
-            ctx = workflow.run(drawing, output_dir, dwg_mode=args.dwg_mode)
+            ctx = workflow.run(drawing, output_dir)
         except ValueError as exc:
             print(f"[SKIP] {drawing.name}: {exc}")
             continue

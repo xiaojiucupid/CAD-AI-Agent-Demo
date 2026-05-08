@@ -13,6 +13,7 @@
 | 输入 CAD 总平面图，支持 `DXF/DWG` | 已实现。DXF 直接解析；DWG 自动调用 ODA File Converter 转 DXF 后解析 | `app/parser.py`、`app/converter.py`、`app/dwg_parser.py` |
 | 实现表 3-2：沿城市道路两侧建筑后退道路红线最小距离 | 已实现结构化规则表 | `app/rules.py` |
 | 实现第 3 款：道路交叉口四周建筑退让要求 | 已实现交叉口上下文判断，并与表 3-2 控制值取严 | `app/reviewer.py`、`app/rules.py` |
+| 实现表 3-3：建筑物离高架和匝道的距离 | 已实现。标准 DXF 可识别 `VIADUCT/ELEVATED/高架/轨道`、`RAMP/匝道` 图层；真实 DWG 通过 `DWGProfile` 配置图层关键词 | `app/parser.py`、`app/dwg_profile.py`、`app/dwg_parser.py`、`app/rules.py` |
 | 使用 Agent 框架 | 已实现，使用 `LangGraph StateGraph` | `app/agent.py` |
 | 不可写成单一脚本 | 已拆分为 `ConvertAgent`、`ParseAgent`、`ReviewAgent`、`ReportAgent` | `app/agent.py` |
 | 输出图文结合报告 | 已实现 HTML 报告 + 总平面标注图 | `app/renderer.py`、`outputs/*_report.html` |
@@ -42,7 +43,7 @@
 
 - 自动 DWG 转 DXF。
 - DWG 专用解析器。
-- 三种 DWG 解析模式。
+- 单一 DWG 严格审查模式，避免多模式造成报告口径不一致。
 - 解析置信度提示。
 - 低置信度人工复核提示。
 
@@ -137,8 +138,9 @@ app/agent.py
 
 1. 《杭州市城市规划管理技术规定（2026）》第三部分 建筑管理 /（四）建筑退让 / 第 2 款：沿城市道路两侧新建建筑后退道路规划红线的最小距离（表 3-2）。
 2. 第 3 款：道路交叉口四周建筑物后退道路红线距离要求。
+3. 表 3-3：建筑物离高架和匝道的距离。系统把高架/轨道、匝道作为特殊线性控制对象进入同一审查链路。
 
-说明：表 3-3（高架/轨道退让）和表 3-4（高压线退让）属于题目加分项，不纳入当前核心审查链，避免偏离本题“建筑退让道路红线”的主任务。
+说明：表 3-4（高压线退让）也已作为扩展规则保留；若图层命中高压/电力关键词，会按电压等级进行扩展审查。
 
 ### 5.2 表 3-2 结构化实现
 
@@ -201,7 +203,29 @@ app/reviewer.py
 - 最终理论让距取 `max(表3-2结果, 交叉口控制值)`。
 - 避免仅因建筑离两条平行道路都较近而误触发交叉口规则。
 
-### 5.5 实际退让距离
+### 5.5 表 3-3 高架/匝道退让
+
+规则代码：
+
+```text
+app/rules.py
+```
+
+表 3-3 已结构化为以下控制值：
+
+| 道路类型 | 居住、学校和医院类低/多层 | 居住、学校和医院类高层 | 其他建筑低/多层 | 其他建筑高层 |
+|---|---:|---:|---:|---:|
+| 高架 | 30m | 40m | 15m | 20m |
+| 匝道 | 30m | 30m | 10m | 15m |
+
+识别与审查方式：
+
+- 标准 DXF：图层名包含 `VIADUCT`、`ELEVATED`、`高架`、`轨道` 时按高架/轨道控制对象处理；包含 `RAMP`、`匝道` 时按匝道处理。
+- 真实 DWG：通过 `DWGProfile.viaduct_layer_keywords` 和 `DWGProfile.ramp_layer_keywords` 配置识别关键词。
+- 建筑功能文本包含 `居住`、`住宅`、`学校`、`医院`、`幼儿园`、`托儿所`、`宿舍`、`疗养` 时按敏感建筑组取值，否则按其他建筑组取值。
+- 审查结果复用 `ReviewAgent` 的临接对象筛选、距离计算、合规判定和报告输出，不另写单独脚本。
+
+### 5.6 实际退让距离
 
 几何计算代码：
 
@@ -316,21 +340,25 @@ DWG 分支的算法逻辑：
 1. ODA 将 DWG 转成 DXF。
 2. `ParseAgent` 判断该图纸来自 DWG 转换，进入 `parse_converted_dwg_dxf()`。
 3. 读取 `app/dwg_profile.py` 中当前模式的图层配置。
-4. 只抽取三类对象：
-   - 建筑主体：`building_polyline_layers` / `building_insert_layers`
-   - 道路候选：`road_layer_keywords`
-   - 红线/控制边界：`redline_layer_keywords`
-5. 排除注释、标注、轴网、绿化、停车、填充、屋面、地下等非审查图层。
+4. 按用户提供的颜色/图层分类抽取审查对象：
+   - 蓝灰色道路系统：`G_DRIV_ROAD`、`G-ROAD-CNTR`、`G-ROAD-园区`
+   - 红色市政道路边界：`G-ROAD-市政`
+   - 红色用地/权属红线：`G-SITE-PROP`、`G_SITE_REDL`、`总图-征地红线`
+   - 建筑主体：`G-BLDG-HIGH`、`G-BLDG-MULT`，`G-BLDG-OTLN` 仅作细节/块参照兜底
+   - 高架/轨道/匝道：按 `viaduct_layer_keywords`、`ramp_layer_keywords` 识别并进入表3-3审查
+5. 排除注释、标注、轴网、绿化、停车、填充、屋面、地下、楼梯、玻璃幕墙、设施细节等非审查图层。
 6. 构造道路面域，提取建筑轮廓。
 7. DWG 坐标按毫米级总图坐标处理，距离输出时用 `unit_scale=0.001` 换算为米。
-8. 交给 `ReviewAgent` 执行表 3-2 和第 3 款审查。
+8. 交给 `ReviewAgent` 执行表 3-2、第 3 款和表 3-3 审查。
 
 需要自己修改 DWG 识别时，优先改 `app/dwg_profile.py`，不要直接改算法：
 
 | 想调整的内容 | 修改字段 |
 |---|---|
-| 建筑主体图层 | `building_polyline_layers`、`building_insert_layers` |
-| 道路图层 | `road_layer_keywords` |
+| 建筑主体图层 | `building_high_layers`、`building_multi_layers`、`building_polyline_layers`、`building_insert_layers` |
+| 蓝灰道路图层 | `road_layer_keywords` |
+| 红色市政道路边界 | `municipal_boundary_keywords` |
+| 亮天蓝控制线 | `blue_boundary_keywords` |
 | 红线/控制边界图层 | `redline_layer_keywords` |
 | 高架图层 | `viaduct_layer_keywords` |
 | 匝道图层 | `ramp_layer_keywords` |
@@ -341,67 +369,31 @@ DWG 分支的算法逻辑：
 | 道路候选数量 | `max_review_roads` |
 | 是否四象限分片 | `split_quadrants` |
 
-注意：红线图层只作为道路红线/控制边界辅助，不直接当道路中心线，避免道路面域跑偏。
+注意：`G-ROAD-市政` 表示市政道路边界，可参与道路红线构造；`G-SITE-PROP`、`G_SITE_REDL`、`总图-征地红线` 表示用地/权属红线，只作为辅助筛选，不直接当道路中心线，避免道路面域跑偏。
 
 ---
 
-## 7. DWG 三种解析模式
+## 7. DWG 严格审查模式
 
-Web 和 CLI 均支持三种模式。
+当前 DWG 解析只保留一个模式：`strict` 严格审查模式。Web 和 CLI 不再提供平衡模式、完整模式选择，避免不同模式生成的对象数量和报告结论不一致。
 
-### 7.1 严格审查模式 `strict`
-
-```text
-○ 严格审查模式
-```
-
-用途：输出较干净、适合审查演示的主要对象。
+用途：输出较干净、适合最终报告演示的主要对象。
 
 特点：
 
-- 强过滤小构件。
-- 强过滤重复轮廓。
-- 强过滤内部道路碎线。
-- 道路和建筑数量较少。
-- 可能漏掉部分真实对象。
+- 严格按颜色分类图层表识别道路、红线、市政道路边界和建筑主体。
+- 蓝灰色 `G_DRIV_ROAD/G-ROAD-CNTR/G-ROAD-园区` 为道路系统，红色 `G-ROAD-市政` 为市政道路边界。
+- 红色 `G-SITE-PROP/G_SITE_REDL/总图-征地红线` 为用地/权属控制线，只辅助筛选。
+- 红色 `G-BLDG-HIGH` 识别为高层建筑，紫色 `G-BLDG-MULT` 识别为多层建筑。
+- 强过滤小构件、注释、填充、绿化、停车、屋面、地下室、楼梯、玻璃幕墙、设施细节等非审查对象。
+- 对同一建筑的内外重复轮廓进行去重。
+- 道路候选数量受控，避免真实 DWG 道路碎线造成报告膨胀。
+- 可能漏掉部分真实对象；如报告出现低置信度提示，应人工复核图层配置。
 
-### 7.2 平衡识别模式 `balanced`
-
-```text
-● 平衡识别模式
-```
-
-默认模式。
-
-特点：
-
-- 保留主要建筑和道路候选。
-- 做适度过滤。
-- 兼顾图纸完整度和审查可读性。
-- 适合默认 Demo 演示。
-
-### 7.3 完整解析模式 `raw`
-
-```text
-○ 完整解析模式
-```
-
-用途：检查 DWG 转换结果和解析覆盖情况。
-
-特点：
-
-- 尽量保留道路候选。
-- 尽量保留建筑候选。
-- 保留基础去重，避免同一建筑大量重复编号。
-- 图面会更复杂。
-- 不建议直接作为最终合规审查结论。
-
-### 7.4 命令行选择模式
+命令行运行无需再传 `--dwg-mode`：
 
 ```bash
-python main.py test_site_03.dwg --output outputs --dwg-mode strict
-python main.py test_site_03.dwg --output outputs --dwg-mode balanced
-python main.py test_site_03.dwg --output outputs --dwg-mode raw
+python main.py test_site_03.dwg --output outputs
 ```
 
 ---
@@ -423,7 +415,7 @@ http://127.0.0.1:5000
 Web 功能：
 
 - 上传 `DXF` / `DWG`。
-- DWG 模式选择：严格审查、平衡识别、完整解析。
+- DWG 固定使用严格审查模式。
 - 显示处理过程。
 - 显示道路数量、建筑数量、合规/不合规数量。
 - 显示 `t_convert / t_parse / t_review / t_render / t_total`。
@@ -477,7 +469,7 @@ python main.py test_site_01.dxf test_site_02.dxf --output outputs
 ### 9.4 指定 DWG 模式运行
 
 ```bash
-python main.py test_site_03.dwg --output outputs --dwg-mode balanced
+python main.py test_site_03.dwg --output outputs
 ```
 
 ---
@@ -574,7 +566,7 @@ t_total
 │  ├─ cli.py            # 命令行入口
 │  ├─ converter.py      # DWG 自动转换
 │  ├─ dwg_parser.py     # DWG 专用解析器
-│  ├─ dwg_profile.py    # DWG strict/balanced/raw 三种模式配置
+│  ├─ dwg_profile.py    # DWG 严格模式图层配置
 │  ├─ geometry.py       # 几何计算
 │  ├─ models.py         # 数据模型
 │  ├─ parser.py         # 标准 DXF 解析器
@@ -628,7 +620,7 @@ python -m pytest -q
 | `app/agent.py` | Agent 拆分、LangGraph 节点与边、上下文状态传递 |
 | `app/converter.py` | DXF/DWG 输入分流、ODA 转换、转换过程日志 |
 | `app/parser.py` | 标准 DXF 图层解析、文字解析、道路面域构造 |
-| `app/dwg_parser.py` | 真实 DWG 的块参照、填充、图层候选、三种解析模式 |
+| `app/dwg_parser.py` | 真实 DWG 的块参照、填充、图层候选和严格模式解析 |
 | `app/rules.py` | 表 3-2、Q 值、建筑类别、交叉口控制值 |
 | `app/reviewer.py` | 临接道路筛选、实际让距计算、合规判定 |
 | `app/renderer.py` | 标注图、HTML 报告、timing JSON 输出 |
@@ -649,13 +641,13 @@ python -m pytest -q
 生成三份图纸报告的推荐命令：
 
 ```bash
-python main.py test_site_01.dxf test_site_02.dxf test_site_03.dwg --output outputs --dwg-mode balanced
+python main.py test_site_01.dxf test_site_02.dxf test_site_03.dwg --output outputs
 ```
 
 如果想查看 DWG 完整解析覆盖情况：
 
 ```bash
-python main.py test_site_03.dwg --output outputs --dwg-mode raw
+python main.py test_site_03.dwg --output outputs
 ```
 
 ---
@@ -664,7 +656,7 @@ python main.py test_site_03.dwg --output outputs --dwg-mode raw
 
 1. `test_site_03.dwg` 是真实图纸，图层复杂，系统会输出解析置信度。若道路红线识别置信度低，结论需人工复核。
 2. DWG 转 DXF 后可能出现中文字体乱码，因此 DWG 分支优先依赖几何图元、块参照和 HATCH 填充，不完全依赖文字。
-3. `raw` 完整解析模式适合检查对象覆盖情况，不建议直接作为最终审查结论。
+3. DWG 当前固定使用严格审查模式；若真实图纸缺少关键图层，应优先调整 `DWGProfile` 图层白名单，而不是切换解析模式。
 4. 本项目按题目核心要求实现表 3-2 和第 3 款，并支持可选加分项表 3-3 高架/匝道退让、表 3-4 高压线退让。
 5. 若要进一步提高真实 DWG 准确度，建议增加 Web 图层配置面板，由用户指定建筑轮廓层、道路红线层、中心线层和忽略层。
 
@@ -699,17 +691,11 @@ python main.py test_site_01.dxf --output outputs
 运行三份图纸：
 
 ```bash
-python main.py test_site_01.dxf test_site_02.dxf test_site_03.dwg --output outputs --dwg-mode balanced
+python main.py test_site_01.dxf test_site_02.dxf test_site_03.dwg --output outputs
 ```
 
 运行 DWG 严格模式：
 
 ```bash
-python main.py test_site_03.dwg --output outputs --dwg-mode strict
-```
-
-运行 DWG 完整模式：
-
-```bash
-python main.py test_site_03.dwg --output outputs --dwg-mode raw
+python main.py test_site_03.dwg --output outputs
 ```

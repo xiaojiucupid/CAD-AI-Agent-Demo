@@ -25,14 +25,21 @@ class DWGProfile:
     building_insert_layers: tuple[str, ...] = ("G-BLDG-OTLN",)
     # building_polyline_layers: 建筑以 LWPOLYLINE 轮廓存在时，允许解析的图层。
     # G-BLDG-POIT 是定位点/转折点，不作为面域建筑；G-FRIE-FLWL 是防火分区线，不作为建筑。
-    building_polyline_layers: tuple[str, ...] = ("G-BLDG-HIGH", "G-BLDG-MULT", "G-BLDG-EXTG", "G-BLDG-OTLN")
+    # G-BLDG-ROOF / G-BLOG-ROOF 在当前测试图中包围的是建筑屋顶外轮廓，纳入可补齐部分大建筑。
+    building_polyline_layers: tuple[str, ...] = ("G-BLDG-HIGH", "G-BLDG-MULT", "G-BLDG-EXTG", "G-BLDG-OTLN", "G-BLDG-ROOF", "G-BLOG-ROOF")
     # building_hatch_layers: 建筑以 HATCH 面填充存在时，允许解析的图层；当前默认关闭，避免把铺装/绿化填充误判为建筑。
     building_hatch_layers: tuple[str, ...] = ()
 
-    # road_layer_keywords: 道路系统图层关键词。只有命中这些关键词的图层才会参与道路面域构造。
-    road_layer_keywords: tuple[str, ...] = ("G_DRIV_ROAD", "G-ROAD-CNTR", "G-ROAD-园区", "G-ROAD-市政")
-    # redline_layer_keywords: 红线/控制线图层关键词。红线只辅助筛选道路，不直接当道路中心线。
+    # road_boundary_layer_keywords: 普通道路红线/边界图层关键词。
+    # 本题优先使用 G-ROAD-市政、G-ROAD-园区 作为道路红线直接来源。
+    road_boundary_layer_keywords: tuple[str, ...] = ("G-ROAD-市政", "G-ROAD-园区", "G_DRIV_ROAD")
+    # road_centerline_layer_keywords: 道路中心线图层关键词。
+    # 优先使用 G-ROAD-CNTR 识别道路中心线，用于交叉口判断和宽度缓冲兜底。
+    road_centerline_layer_keywords: tuple[str, ...] = ("G-ROAD-CNTR",)
+    # redline_layer_keywords: 红线/控制线图层关键词。默认只进入场景化核心红线，不混入普通道路退距计算。
     redline_layer_keywords: tuple[str, ...] = ("G-SITE-PROP", "G_SITE_REDL", "总图-征地红线")
+    # scenario_open_space_redline_keywords: 第三组场景补充纳入核心红线的开放空间边界图层。
+    scenario_open_space_redline_keywords: tuple[str, ...] = ("G-SITE-开放",)
     # municipal_boundary_keywords: 市政道路边界关键词，作为道路候选的补充入口。
     municipal_boundary_keywords: tuple[str, ...] = ("G-ROAD-市政",)
 
@@ -47,7 +54,7 @@ class DWGProfile:
     annotation_keywords: tuple[str, ...] = ("_N_", "_DIM", "DIM_", "TEXT", "TEX", "AXIS", "ANNO", "PUB_DIM", "PUB_TEXT")
     # ignore_layer_prefixes: 以前缀形式忽略整类图层。
     ignore_layer_prefixes: tuple[str, ...] = ("A_N_", "G_N_", "DIM_", "PUB_DIM", "PUB_TEXT", "AXIS", "Defpoints")
-    # ignore_layers: 明确忽略的图层名，主要是绿化、填充、停车、屋面、地下、楼梯、文字等非审查对象。
+    # ignore_layers: 明确忽略的图层名，主要是绿化、填充、停车、地下、楼梯、文字等非审查对象。
     ignore_layers: tuple[str, ...] = (
         "PROMPT",
         "A_N_DIM_ELEV",
@@ -92,7 +99,6 @@ class DWGProfile:
         "PUB_HATCH",
         "PUB_WALL",
         "总图-地面填充",
-        "G-BLDG-ROOF",
         "G-BSMT-OTLN",
         "A_ABOVE",
         "A_N_AREA",
@@ -140,9 +146,8 @@ class DWGProfile:
 STRICT_DWG_PROFILE = DWGProfile(
     mode="strict",
     label="严格审查模式",
-    description="只使用 G_DRIV_ROAD 和 G-ROAD-市政 作为道路，建筑只取 G-BLDG-HIGH/MULT/EXTG/OTLN 主体轮廓。",
-    road_layer_keywords=("G_DRIV_ROAD", "G-ROAD-市政"),
-    max_review_roads=6,
+    description="按题目图层语义识别：G-ROAD-市政/园区 为道路边界，G-ROAD-CNTR 为道路中心线，建筑取 G-BLDG-HIGH/MULT/OTLN/ROOF。",
+    max_review_roads=8,
     min_building_area=8_000_000.0,
 )
 
